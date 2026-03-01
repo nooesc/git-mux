@@ -24,7 +24,33 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
     let mut state = AppState::new();
     let events = EventHandler::new(Duration::from_secs(1));
 
+    // Create tokio runtime for async background tasks
+    let rt = tokio::runtime::Runtime::new()?;
+    let (bg_tx, bg_rx) = std::sync::mpsc::channel::<Message>();
+
+    // Spawn initial data fetch
+    {
+        let tx = bg_tx.clone();
+        rt.spawn(async move {
+            match crate::github::GitHubClient::new().await {
+                Ok(client) => {
+                    match client.fetch_all_repos().await {
+                        Ok(repos) => { let _ = tx.send(Message::ReposLoaded(repos)); }
+                        Err(e) => { let _ = tx.send(Message::Error(format!("Failed to fetch repos: {}", e))); }
+                    }
+                }
+                Err(e) => { let _ = tx.send(Message::Error(format!("Auth failed: {}", e))); }
+            }
+        });
+        state.loading.insert(app::View::Repos);
+    }
+
     loop {
+        // Drain background messages
+        while let Ok(msg) = bg_rx.try_recv() {
+            update(&mut state, msg);
+        }
+
         terminal.draw(|frame| render(frame, &state))?;
 
         match events.next()? {

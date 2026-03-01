@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use crate::github::repos::RepoInfo;
+
 // ── View enum ──
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -52,6 +54,10 @@ pub struct AppState {
     pub loading: HashSet<View>,
     pub last_refresh: HashMap<View, Instant>,
     pub error: Option<String>,
+
+    // Repo state
+    pub repos: Vec<RepoInfo>,
+    pub repo_selected: usize,
 }
 
 impl AppState {
@@ -62,6 +68,8 @@ impl AppState {
             loading: HashSet::new(),
             last_refresh: HashMap::new(),
             error: None,
+            repos: Vec::new(),
+            repo_selected: 0,
         }
     }
 }
@@ -80,6 +88,7 @@ pub enum Message {
     ForceRefresh,
     Error(String),
     DismissError,
+    ReposLoaded(Vec<RepoInfo>),
 }
 
 // ── Update ──
@@ -90,8 +99,32 @@ pub fn update(state: &mut AppState, msg: Message) {
         Message::SwitchView(view) => state.active_view = view,
         Message::Error(e) => state.error = Some(e),
         Message::DismissError => state.error = None,
-        // Navigation and data messages will be handled as we add views
-        _ => {}
+        Message::ReposLoaded(repos) => {
+            state.repos = repos;
+            state.loading.remove(&View::Repos);
+            state.last_refresh.insert(View::Repos, Instant::now());
+        }
+        Message::Up => {
+            match state.active_view {
+                View::Repos => {
+                    if state.repo_selected > 0 {
+                        state.repo_selected -= 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Message::Down => {
+            match state.active_view {
+                View::Repos => {
+                    if state.repo_selected < state.repos.len().saturating_sub(1) {
+                        state.repo_selected += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Message::Select | Message::Back | Message::Tick | Message::ForceRefresh => {}
     }
 }
 
@@ -143,5 +176,57 @@ mod tests {
         for (i, view) in View::ALL.iter().enumerate() {
             assert_eq!(view.index(), i);
         }
+    }
+
+    #[test]
+    fn test_repos_loaded() {
+        let mut state = AppState::new();
+        state.loading.insert(View::Repos);
+
+        let repos = vec![RepoInfo {
+            full_name: "user/test".to_string(),
+            description: None,
+            language: Some("Rust".to_string()),
+            stargazers_count: 5,
+            forks_count: 1,
+            open_issues_count: 2,
+            pushed_at: None,
+            html_url: "https://github.com/user/test".to_string(),
+            is_fork: false,
+            is_private: false,
+            owner: "user".to_string(),
+        }];
+
+        update(&mut state, Message::ReposLoaded(repos));
+        assert_eq!(state.repos.len(), 1);
+        assert!(!state.loading.contains(&View::Repos));
+    }
+
+    #[test]
+    fn test_repo_navigation() {
+        let mut state = AppState::new();
+        state.repos = vec![
+            RepoInfo {
+                full_name: "a".to_string(), description: None, language: None,
+                stargazers_count: 0, forks_count: 0, open_issues_count: 0,
+                pushed_at: None, html_url: String::new(), is_fork: false,
+                is_private: false, owner: String::new(),
+            },
+            RepoInfo {
+                full_name: "b".to_string(), description: None, language: None,
+                stargazers_count: 0, forks_count: 0, open_issues_count: 0,
+                pushed_at: None, html_url: String::new(), is_fork: false,
+                is_private: false, owner: String::new(),
+            },
+        ];
+
+        update(&mut state, Message::Down);
+        assert_eq!(state.repo_selected, 1);
+        update(&mut state, Message::Down);
+        assert_eq!(state.repo_selected, 1); // can't go past end
+        update(&mut state, Message::Up);
+        assert_eq!(state.repo_selected, 0);
+        update(&mut state, Message::Up);
+        assert_eq!(state.repo_selected, 0); // can't go below 0
     }
 }
