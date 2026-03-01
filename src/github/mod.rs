@@ -7,6 +7,7 @@ pub mod repos;
 
 use anyhow::Result;
 use octocrab::Octocrab;
+use std::sync::Arc;
 
 pub struct GitHubClient {
     pub octocrab: Octocrab,
@@ -14,7 +15,7 @@ pub struct GitHubClient {
 }
 
 impl GitHubClient {
-    pub async fn new() -> Result<Self> {
+    pub async fn new() -> Result<Arc<Self>> {
         let token = auth::get_token()?;
         let octocrab = Octocrab::builder()
             .personal_token(token)
@@ -27,6 +28,6 @@ impl GitHubClient {
             .unwrap_or("unknown")
             .to_string();
 
-        Ok(Self { octocrab, username })
+        Ok(Arc::new(Self { octocrab, username }))
     }
 }

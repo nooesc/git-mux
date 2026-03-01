@@ -41,78 +41,65 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let (bg_tx, bg_rx) = std::sync::mpsc::channel::<Message>();
 
-    // Spawn repos + CI fetch (CI depends on repos)
+    // Create ONE shared client, then fan out all fetches in parallel
     {
         let tx = bg_tx.clone();
         rt.spawn(async move {
-            match crate::github::GitHubClient::new().await {
-                Ok(client) => {
-                    match client.fetch_all_repos().await {
-                        Ok(repos) => {
-                            let _ = tx.send(Message::ReposLoaded(repos.clone()));
-                            match client.fetch_ci_runs(&repos).await {
-                                Ok(runs) => { let _ = tx.send(Message::CiRunsLoaded(runs)); }
-                                Err(e) => { let _ = tx.send(Message::Error(format!("CI: {}", e))); }
-                            }
-                        }
-                        Err(e) => { let _ = tx.send(Message::Error(format!("Failed to fetch repos: {}", e))); }
-                    }
+            let client = match crate::github::GitHubClient::new().await {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(Message::Error(format!("Auth failed: {}", e)));
+                    return;
                 }
-                Err(e) => { let _ = tx.send(Message::Error(format!("Auth failed: {}", e))); }
-            }
+            };
+
+            // Fan out: repos+CI, PRs, contributions, notifications — all in parallel
+            let (repos_tx, prs_tx, contrib_tx, notif_tx) =
+                (tx.clone(), tx.clone(), tx.clone(), tx.clone());
+            let (c1, c2, c3, c4) =
+                (client.clone(), client.clone(), client.clone(), client.clone());
+
+            let repos_handle = tokio::spawn(async move {
+                match c1.fetch_all_repos().await {
+                    Ok(repos) => {
+                        let _ = repos_tx.send(Message::ReposLoaded(repos.clone()));
+                        // CI depends on repos — fetch immediately after
+                        match c1.fetch_ci_runs(&repos).await {
+                            Ok(runs) => { let _ = repos_tx.send(Message::CiRunsLoaded(runs)); }
+                            Err(e) => { let _ = repos_tx.send(Message::Error(format!("CI: {}", e))); }
+                        }
+                    }
+                    Err(e) => { let _ = repos_tx.send(Message::Error(format!("Repos: {}", e))); }
+                }
+            });
+
+            let prs_handle = tokio::spawn(async move {
+                match c2.fetch_prs().await {
+                    Ok(prs) => { let _ = prs_tx.send(Message::PrsLoaded(prs)); }
+                    Err(e) => { let _ = prs_tx.send(Message::Error(format!("PRs: {}", e))); }
+                }
+            });
+
+            let contrib_handle = tokio::spawn(async move {
+                match c3.fetch_contributions().await {
+                    Ok(data) => { let _ = contrib_tx.send(Message::ContributionsLoaded(data)); }
+                    Err(e) => { let _ = contrib_tx.send(Message::Error(format!("Contributions: {}", e))); }
+                }
+            });
+
+            let notif_handle = tokio::spawn(async move {
+                match c4.fetch_notifications().await {
+                    Ok(notifs) => { let _ = notif_tx.send(Message::NotificationsLoaded(notifs)); }
+                    Err(e) => { let _ = notif_tx.send(Message::Error(format!("Notifications: {}", e))); }
+                }
+            });
+
+            let _ = tokio::join!(repos_handle, prs_handle, contrib_handle, notif_handle);
         });
         state.loading.insert(app::View::Repos);
         state.loading.insert(app::View::CI);
-    }
-
-    // Spawn PR fetch
-    {
-        let tx = bg_tx.clone();
-        rt.spawn(async move {
-            match crate::github::GitHubClient::new().await {
-                Ok(client) => {
-                    match client.fetch_prs().await {
-                        Ok(prs) => { let _ = tx.send(Message::PrsLoaded(prs)); }
-                        Err(e) => { let _ = tx.send(Message::Error(format!("Failed to fetch PRs: {}", e))); }
-                    }
-                }
-                Err(e) => { let _ = tx.send(Message::Error(format!("Auth failed: {}", e))); }
-            }
-        });
         state.loading.insert(app::View::PRs);
-    }
-
-    // Spawn contributions fetch
-    {
-        let tx = bg_tx.clone();
-        rt.spawn(async move {
-            match crate::github::GitHubClient::new().await {
-                Ok(client) => {
-                    match client.fetch_contributions().await {
-                        Ok(data) => { let _ = tx.send(Message::ContributionsLoaded(data)); }
-                        Err(e) => { let _ = tx.send(Message::Error(format!("Failed to fetch contributions: {}", e))); }
-                    }
-                }
-                Err(e) => { let _ = tx.send(Message::Error(format!("Auth failed: {}", e))); }
-            }
-        });
         state.loading.insert(app::View::Graph);
-    }
-
-    // Spawn notifications fetch
-    {
-        let tx = bg_tx.clone();
-        rt.spawn(async move {
-            match crate::github::GitHubClient::new().await {
-                Ok(client) => {
-                    match client.fetch_notifications().await {
-                        Ok(notifs) => { let _ = tx.send(Message::NotificationsLoaded(notifs)); }
-                        Err(e) => { let _ = tx.send(Message::Error(format!("Failed to fetch notifications: {}", e))); }
-                    }
-                }
-                Err(e) => { let _ = tx.send(Message::Error(format!("Auth failed: {}", e))); }
-            }
-        });
         state.loading.insert(app::View::Notifications);
     }
 
@@ -338,6 +325,9 @@ fn spawn_refresh(
         }
     }
 }
+
+// Note: spawn_refresh still creates new clients per refresh. This is fine for
+// periodic refreshes (every 60s), the startup optimization is what matters most.
 
 fn render(frame: &mut Frame, state: &AppState) {
     let [tab_area, content_area, status_area] = Layout::vertical([
