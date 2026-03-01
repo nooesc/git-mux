@@ -2,15 +2,17 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
     #[serde(default = "default_general")]
     pub general: GeneralConfig,
     #[serde(default)]
     pub orgs: OrgConfig,
+    #[serde(default)]
+    pub repos: RepoConfig,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GeneralConfig {
     #[serde(default = "default_refresh_interval")]
     pub refresh_interval_secs: u64,
@@ -18,10 +20,16 @@ pub struct GeneralConfig {
     pub default_view: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct OrgConfig {
     #[serde(default)]
     pub include: Vec<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+pub struct RepoConfig {
     #[serde(default)]
     pub exclude: Vec<String>,
 }
@@ -45,6 +53,7 @@ impl Config {
             let config = Config {
                 general: default_general(),
                 orgs: OrgConfig::default(),
+                repos: RepoConfig::default(),
             };
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -86,5 +95,15 @@ mod tests {
         "#).unwrap();
         assert_eq!(config.general.refresh_interval_secs, 30);
         assert_eq!(config.general.default_view, "repos");
+    }
+
+    #[test]
+    fn test_repo_exclusion_config() {
+        let config: Config = toml::from_str(r#"
+            [repos]
+            exclude = ["owner/repo-name", "org/internal-tool"]
+        "#).unwrap();
+        assert_eq!(config.repos.exclude.len(), 2);
+        assert_eq!(config.repos.exclude[0], "owner/repo-name");
     }
 }
