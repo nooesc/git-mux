@@ -1,6 +1,8 @@
 pub mod auth;
+pub mod avatar;
 pub mod ci;
 pub mod contributions;
+pub mod issues;
 pub mod notifications;
 pub mod prs;
 pub mod repos;
@@ -9,9 +11,18 @@ use anyhow::Result;
 use octocrab::Octocrab;
 use std::sync::Arc;
 
+#[derive(Debug, Clone)]
+pub struct UserInfo {
+    pub login: String,
+    pub avatar_url: String,
+    pub public_repos: u32,
+    pub followers: u32,
+}
+
 pub struct GitHubClient {
     pub octocrab: Octocrab,
     pub username: String,
+    pub user_info: UserInfo,
 }
 
 impl GitHubClient {
@@ -21,13 +32,19 @@ impl GitHubClient {
             .personal_token(token)
             .build()?;
 
-        // Fetch authenticated user's login
         let user: serde_json::Value = octocrab.get("/user", None::<&()>).await?;
         let username = user["login"]
             .as_str()
             .unwrap_or("unknown")
             .to_string();
 
-        Ok(Arc::new(Self { octocrab, username }))
+        let user_info = UserInfo {
+            login: username.clone(),
+            avatar_url: user["avatar_url"].as_str().unwrap_or("").to_string(),
+            public_repos: user["public_repos"].as_u64().unwrap_or(0) as u32,
+            followers: user["followers"].as_u64().unwrap_or(0) as u32,
+        };
+
+        Ok(Arc::new(Self { octocrab, username, user_info }))
     }
 }
