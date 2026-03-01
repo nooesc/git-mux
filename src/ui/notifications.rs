@@ -6,9 +6,13 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use crate::app::AppState;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
-    if state.notifications.is_empty() {
+    let filtered = state.filtered_notifications();
+
+    if filtered.is_empty() {
         let loading = if state.loading.contains(&crate::app::View::Notifications) {
             "Loading notifications..."
+        } else if !state.search_query.is_empty() {
+            "No matching notifications"
         } else {
             "No notifications"
         };
@@ -33,8 +37,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     .areas(list_area);
 
     // Build notification list items
-    let items: Vec<ListItem> = state
-        .notifications
+    let items: Vec<ListItem> = filtered
         .iter()
         .enumerate()
         .map(|(i, notif)| {
@@ -75,15 +78,21 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
                 ),
                 Span::styled(title_display, base_style),
                 Span::styled(
-                    format!("  {}", notif.repo_full_name.split('/').last().unwrap_or("")),
+                    format!("  {}", notif.repo_full_name.split('/').next_back().unwrap_or("")),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))
         })
         .collect();
 
+    let title = if state.search_query.is_empty() {
+        " Notifications ".to_string()
+    } else {
+        format!(" Notifications ({} matches) ", filtered.len())
+    };
+
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Notifications "));
+        .block(Block::default().borders(Borders::ALL).title(title));
     frame.render_widget(list, items_area);
 
     // Hint bar
@@ -96,10 +105,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(hints, hint_area);
 
     // Detail panel for selected notification
-    if let Some(notif) = state.notifications.get(state.notif_selected) {
+    if let Some(notif) = filtered.get(state.notif_selected) {
         let updated_ago = notif
             .updated_at
-            .map(|dt| format_relative_time(dt))
+            .map(format_relative_time)
             .unwrap_or_else(|| "unknown".to_string());
 
         let reason_display = format_reason(&notif.reason);

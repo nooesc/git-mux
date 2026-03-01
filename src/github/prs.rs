@@ -70,6 +70,7 @@ impl GitHubClient {
         }).collect())
     }
 
+    #[allow(dead_code)]
     pub async fn merge_pr(&self, owner: &str, repo: &str, number: u64) -> Result<()> {
         self.octocrab
             .pulls(owner, repo)
@@ -79,6 +80,7 @@ impl GitHubClient {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn approve_pr(&self, owner: &str, repo: &str, number: u64) -> Result<()> {
         let body = serde_json::json!({ "event": "APPROVE" });
         let _: serde_json::Value = self.octocrab.post(
@@ -88,6 +90,7 @@ impl GitHubClient {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn comment_on_pr(&self, owner: &str, repo: &str, number: u64, body: &str) -> Result<()> {
         let payload = serde_json::json!({ "body": body });
         let _: serde_json::Value = self.octocrab.post(

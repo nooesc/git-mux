@@ -189,6 +189,7 @@ pub enum Message {
     Tick,
     ForceRefresh,
     Error(String),
+    #[allow(dead_code)]
     DismissError,
     ReposLoaded(Vec<RepoInfo>),
     PrsLoaded(PrState),
@@ -327,10 +328,10 @@ pub fn update(state: &mut AppState, msg: Message) {
                     }
                 }
                 View::Notifications => {
-                    if let Some(notif) = state.notifications.get(state.notif_selected) {
-                        if let Some(ref url) = notif.url {
-                            state.pending_open_url = Some(url.clone());
-                        }
+                    if let Some(notif) = state.notifications.get(state.notif_selected)
+                        && let Some(ref url) = notif.url
+                    {
+                        state.pending_open_url = Some(url.clone());
                     }
                 }
                 View::CI => {
@@ -351,11 +352,11 @@ pub fn update(state: &mut AppState, msg: Message) {
         Message::SearchBackspace => { state.search_query.pop(); }
         Message::Tick => {
             // Auto-dismiss error after 10 seconds
-            if let Some(at) = state.error_at {
-                if at.elapsed().as_secs() > 10 {
-                    state.error = None;
-                    state.error_at = None;
-                }
+            if let Some(at) = state.error_at
+                && at.elapsed().as_secs() > 10
+            {
+                state.error = None;
+                state.error_at = None;
             }
         }
         Message::Back | Message::ForceRefresh => {}

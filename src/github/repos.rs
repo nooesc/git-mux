@@ -12,8 +12,10 @@ pub struct RepoInfo {
     pub open_issues_count: u32,
     pub pushed_at: Option<DateTime<Utc>>,
     pub html_url: String,
+    #[allow(dead_code)]
     pub is_fork: bool,
     pub is_private: bool,
+    #[allow(dead_code)]
     pub owner: String,
 }
 

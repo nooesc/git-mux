@@ -8,10 +8,10 @@ pub fn get_token() -> Result<String> {
     if let Ok(token) = get_token_from_gh_cli() {
         return Ok(token);
     }
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        if !token.is_empty() {
-            return Ok(token);
-        }
+    if let Ok(token) = std::env::var("GITHUB_TOKEN")
+        && !token.is_empty()
+    {
+        return Ok(token);
     }
     bail!(
         "No GitHub token found. Either:\n\

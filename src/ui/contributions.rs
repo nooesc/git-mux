@@ -48,12 +48,10 @@ fn render_heatmap(frame: &mut Frame, area: Rect, days: &[ContributionDay]) {
         // chrono: Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6
         let weekday = day.date.weekday().num_days_from_monday() as usize;
 
-        // If we're at Sunday (6) and current week has data before it, or if
-        // weekday is 0 (Monday) and the previous week had entries, push and start new
-        if weekday == 0 && weeks.is_empty() && current_week.iter().any(|d| d.is_some()) {
-            weeks.push(current_week);
-            current_week = [None; 7];
-        } else if weekday == 0 && !weeks.is_empty() {
+        // If weekday is Monday (0), push the current week and start a new one
+        if weekday == 0
+            && (!weeks.is_empty() || current_week.iter().any(|d| d.is_some()))
+        {
             weeks.push(current_week);
             current_week = [None; 7];
         }

@@ -6,9 +6,13 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use crate::app::AppState;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
-    if state.ci_runs.is_empty() {
+    let filtered = state.filtered_ci_runs();
+
+    if filtered.is_empty() {
         let loading = if state.loading.contains(&crate::app::View::CI) {
             "Loading CI runs..."
+        } else if !state.search_query.is_empty() {
+            "No matching CI runs"
         } else {
             "No CI runs found"
         };
@@ -33,8 +37,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     .areas(list_area);
 
     // Build CI run list items, grouped by repo
-    let items: Vec<ListItem> = state
-        .ci_runs
+    let items: Vec<ListItem> = filtered
         .iter()
         .enumerate()
         .map(|(i, run)| {
@@ -50,12 +53,12 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
 
             let time_ago = run
                 .created_at
-                .map(|dt| format_relative_time(dt))
+                .map(format_relative_time)
                 .unwrap_or_default();
 
             let duration_str = run
                 .duration_secs
-                .map(|s| format_duration(s))
+                .map(format_duration)
                 .unwrap_or_default();
 
             // Truncate workflow name for display
@@ -72,7 +75,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
                 run.head_branch.clone()
             };
 
-            let repo_short = run.repo_full_name.split('/').last().unwrap_or("");
+            let repo_short = run.repo_full_name.split('/').next_back().unwrap_or("");
 
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{} ", prefix), base_style),
@@ -99,8 +102,14 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         })
         .collect();
 
+    let title = if state.search_query.is_empty() {
+        " CI Runs ".to_string()
+    } else {
+        format!(" CI Runs ({} matches) ", filtered.len())
+    };
+
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" CI Runs "));
+        .block(Block::default().borders(Borders::ALL).title(title));
     frame.render_widget(list, items_area);
 
     // Hint bar
@@ -113,7 +122,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(hints, hint_area);
 
     // Detail panel for selected run
-    if let Some(run) = state.ci_runs.get(state.ci_selected) {
+    if let Some(run) = filtered.get(state.ci_selected) {
         let (icon, icon_color) = status_icon_and_color(&run.status, &run.conclusion);
         let conclusion_display = run
             .conclusion
@@ -122,12 +131,12 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
 
         let created_ago = run
             .created_at
-            .map(|dt| format_relative_time(dt))
+            .map(format_relative_time)
             .unwrap_or_else(|| "unknown".to_string());
 
         let duration_display = run
             .duration_secs
-            .map(|s| format_duration(s))
+            .map(format_duration)
             .unwrap_or_else(|| "--".to_string());
 
         let details = vec![

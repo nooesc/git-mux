@@ -21,6 +21,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         return;
     }
 
+    // Filter PR lists for search
+    let filtered_authored = filter_pr_list(&state.prs.authored, &state.search_query);
+    let filtered_review = filter_pr_list(&state.prs.review_requested, &state.search_query);
+
     // Split into left (list) and right (detail) panels
     let [list_area, detail_area] = Layout::horizontal([
         Constraint::Percentage(50),
@@ -41,7 +45,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         frame,
         authored_area,
         " My PRs ",
-        &state.prs.authored,
+        &filtered_authored,
         state.pr_section == PrSection::Authored,
         if state.pr_section == PrSection::Authored { Some(state.pr_selected) } else { None },
     );
@@ -51,7 +55,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         frame,
         review_area,
         " Review Requested ",
-        &state.prs.review_requested,
+        &filtered_review,
         state.pr_section == PrSection::ReviewRequested,
         if state.pr_section == PrSection::ReviewRequested { Some(state.pr_selected) } else { None },
     );
@@ -65,21 +69,19 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     ]));
     frame.render_widget(hints, hint_area);
 
-    // Detail panel
-    let selected_pr = match state.pr_section {
-        PrSection::Authored => state.prs.authored.get(state.pr_selected),
-        PrSection::ReviewRequested => state.prs.review_requested.get(state.pr_selected),
-    };
+    // Detail panel -- use filtered_prs to get the selected PR from the active section
+    let filtered_active = state.filtered_prs();
+    let selected_pr = filtered_active.get(state.pr_selected).copied();
 
     if let Some(pr) = selected_pr {
         let updated_ago = pr
             .updated_at
-            .map(|dt| format_relative_time(dt))
+            .map(format_relative_time)
             .unwrap_or_else(|| "unknown".to_string());
 
         let created_ago = pr
             .created_at
-            .map(|dt| format_relative_time(dt))
+            .map(format_relative_time)
             .unwrap_or_else(|| "unknown".to_string());
 
         let draft_label = if pr.draft { "Yes" } else { "No" };
@@ -146,11 +148,23 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 }
 
+fn filter_pr_list<'a>(prs: &'a [crate::github::prs::PrInfo], query: &str) -> Vec<&'a crate::github::prs::PrInfo> {
+    if query.is_empty() {
+        return prs.iter().collect();
+    }
+    let q = query.to_lowercase();
+    prs.iter().filter(|pr| {
+        pr.title.to_lowercase().contains(&q)
+            || pr.repo_full_name.to_lowercase().contains(&q)
+            || pr.user.to_lowercase().contains(&q)
+    }).collect()
+}
+
 fn render_pr_list(
     frame: &mut Frame,
     area: Rect,
     title: &str,
-    prs: &[crate::github::prs::PrInfo],
+    prs: &[&crate::github::prs::PrInfo],
     is_active_section: bool,
     selected: Option<usize>,
 ) {
@@ -204,7 +218,7 @@ fn render_pr_list(
                 Span::styled(format!("#{} ", pr.number), Style::default().fg(Color::Yellow)),
                 Span::styled(title_display, style),
                 Span::styled(
-                    format!("  {}", pr.repo_full_name.split('/').last().unwrap_or("")),
+                    format!("  {}", pr.repo_full_name.split('/').next_back().unwrap_or("")),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))

@@ -12,6 +12,7 @@ pub struct WorkflowRun {
     pub conclusion: Option<String>, // success, failure, cancelled, etc.
     pub created_at: Option<DateTime<Utc>>,
     pub html_url: String,
+    #[allow(dead_code)]
     pub run_started_at: Option<DateTime<Utc>>,
     pub duration_secs: Option<i64>,
 }
