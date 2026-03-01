@@ -406,6 +406,7 @@ dependencies = [
  "chrono",
  "crossterm",
  "dirs",
+ "futures",
  "octocrab",
  "open",
  "ratatui",

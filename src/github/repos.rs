@@ -21,59 +21,36 @@ pub struct RepoInfo {
 
 impl GitHubClient {
     /// Fetch all repos for the authenticated user (personal + all orgs).
+    /// Fetches personal repos and org list concurrently, then all org repos in parallel.
     pub async fn fetch_all_repos(&self) -> Result<Vec<RepoInfo>> {
-        let mut all_repos = Vec::new();
-
-        // Fetch personal repos (paginated)
-        let mut page = 1u32;
-        loop {
-            let repos: Vec<serde_json::Value> = self.octocrab.get(
-                "/user/repos",
-                Some(&[("per_page", "100"), ("page", &page.to_string()), ("sort", "pushed")]),
-            ).await?;
-
-            if repos.is_empty() {
-                break;
+        // Step 1: Fetch personal repos and org list in parallel
+        let (personal_result, orgs_result) = tokio::join!(
+            self.fetch_paginated_repos("/user/repos"),
+            async {
+                let orgs: Vec<serde_json::Value> = self.octocrab.get("/user/orgs", None::<&()>).await?;
+                Ok::<_, anyhow::Error>(orgs)
             }
+        );
 
-            for repo in &repos {
-                all_repos.push(parse_repo(repo));
-            }
+        let mut all_repos = personal_result?;
+        let orgs = orgs_result?;
 
-            if repos.len() < 100 {
-                break;
-            }
-            page += 1;
-        }
+        // Step 2: Fetch all org repos in parallel
+        let org_logins: Vec<String> = orgs
+            .iter()
+            .filter_map(|o| o["login"].as_str().map(String::from))
+            .collect();
 
-        // Fetch org repos
-        let orgs: Vec<serde_json::Value> = self.octocrab.get(
-            "/user/orgs",
-            None::<&()>,
-        ).await?;
+        let org_futures: Vec<_> = org_logins
+            .iter()
+            .map(|login| self.fetch_paginated_repos(format!("/orgs/{}/repos", login)))
+            .collect();
 
-        for org in &orgs {
-            if let Some(org_login) = org["login"].as_str() {
-                let mut page = 1u32;
-                loop {
-                    let repos: Vec<serde_json::Value> = self.octocrab.get(
-                        format!("/orgs/{}/repos", org_login),
-                        Some(&[("per_page", "100"), ("page", &page.to_string()), ("sort", "pushed")]),
-                    ).await?;
-
-                    if repos.is_empty() {
-                        break;
-                    }
-
-                    for repo in &repos {
-                        all_repos.push(parse_repo(repo));
-                    }
-
-                    if repos.len() < 100 {
-                        break;
-                    }
-                    page += 1;
-                }
+        let org_results = futures::future::join_all(org_futures).await;
+        for result in org_results {
+            match result {
+                Ok(repos) => all_repos.extend(repos),
+                Err(_) => continue, // skip orgs we can't access
             }
         }
 
@@ -85,6 +62,32 @@ impl GitHubClient {
         all_repos.sort_by(|a, b| b.pushed_at.cmp(&a.pushed_at));
 
         Ok(all_repos)
+    }
+
+    /// Fetch repos from a paginated endpoint.
+    async fn fetch_paginated_repos(&self, endpoint: impl Into<String>) -> Result<Vec<RepoInfo>> {
+        let endpoint = endpoint.into();
+        let mut repos = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let batch: Vec<serde_json::Value> = self.octocrab.get(
+                &endpoint,
+                Some(&[("per_page", "100"), ("page", &page.to_string()), ("sort", "pushed")]),
+            ).await?;
+
+            if batch.is_empty() {
+                break;
+            }
+
+            let done = batch.len() < 100;
+            repos.extend(batch.iter().map(parse_repo));
+
+            if done {
+                break;
+            }
+            page += 1;
+        }
+        Ok(repos)
     }
 }
 
