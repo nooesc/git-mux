@@ -385,16 +385,28 @@ pub fn update(state: &mut AppState, msg: Message) {
             } else {
                 match &state.screen {
                     Screen::Home => {
-                        let cols = state.num_card_cols();
-                        match state.view_mode {
-                            ViewMode::Cards => {
-                                if state.card_selected >= cols {
-                                    state.card_selected -= cols;
-                                }
-                            }
-                            ViewMode::List => {
-                                if state.card_selected > 0 {
-                                    state.card_selected -= 1;
+                        if state.home_focus == HomeFocus::FilterBar {
+                            // Already at top, do nothing
+                        } else {
+                            let at_top = match state.view_mode {
+                                ViewMode::Cards => state.card_selected < state.num_card_cols(),
+                                ViewMode::List => state.card_selected == 0,
+                            };
+                            if at_top {
+                                state.home_focus = HomeFocus::FilterBar;
+                            } else {
+                                match state.view_mode {
+                                    ViewMode::Cards => {
+                                        let cols = state.num_card_cols();
+                                        if state.card_selected >= cols {
+                                            state.card_selected -= cols;
+                                        }
+                                    }
+                                    ViewMode::List => {
+                                        if state.card_selected > 0 {
+                                            state.card_selected -= 1;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -417,17 +429,21 @@ pub fn update(state: &mut AppState, msg: Message) {
             } else {
                 match &state.screen {
                     Screen::Home => {
-                        let cols = state.num_card_cols();
-                        let len = state.filtered_repos().len();
-                        match state.view_mode {
-                            ViewMode::Cards => {
-                                if state.card_selected + cols < len {
-                                    state.card_selected += cols;
+                        if state.home_focus == HomeFocus::FilterBar {
+                            state.home_focus = HomeFocus::Repos;
+                        } else {
+                            let cols = state.num_card_cols();
+                            let len = state.filtered_repos().len();
+                            match state.view_mode {
+                                ViewMode::Cards => {
+                                    if state.card_selected + cols < len {
+                                        state.card_selected += cols;
+                                    }
                                 }
-                            }
-                            ViewMode::List => {
-                                if state.card_selected < len.saturating_sub(1) {
-                                    state.card_selected += 1;
+                                ViewMode::List => {
+                                    if state.card_selected < len.saturating_sub(1) {
+                                        state.card_selected += 1;
+                                    }
                                 }
                             }
                         }
@@ -443,16 +459,34 @@ pub fn update(state: &mut AppState, msg: Message) {
         }
 
         Message::Left => {
-            if state.screen == Screen::Home && state.view_mode == ViewMode::Cards && state.card_selected > 0 {
-                state.card_selected -= 1;
+            if state.screen == Screen::Home {
+                if state.home_focus == HomeFocus::FilterBar {
+                    if state.filter_index > 0 {
+                        state.filter_index -= 1;
+                        let opts = state.filter_options();
+                        state.repo_filter = opts[state.filter_index].clone();
+                        state.card_selected = 0;
+                    }
+                } else if state.view_mode == ViewMode::Cards && state.card_selected > 0 {
+                    state.card_selected -= 1;
+                }
             }
         }
 
         Message::Right => {
-            if state.screen == Screen::Home && state.view_mode == ViewMode::Cards {
-                let len = state.filtered_repos().len();
-                if state.card_selected + 1 < len {
-                    state.card_selected += 1;
+            if state.screen == Screen::Home {
+                if state.home_focus == HomeFocus::FilterBar {
+                    let opts = state.filter_options();
+                    if state.filter_index + 1 < opts.len() {
+                        state.filter_index += 1;
+                        state.repo_filter = opts[state.filter_index].clone();
+                        state.card_selected = 0;
+                    }
+                } else if state.view_mode == ViewMode::Cards {
+                    let len = state.filtered_repos().len();
+                    if state.card_selected + 1 < len {
+                        state.card_selected += 1;
+                    }
                 }
             }
         }
@@ -469,21 +503,25 @@ pub fn update(state: &mut AppState, msg: Message) {
             } else {
                 match &state.screen {
                     Screen::Home => {
-                        // Drill into repo detail
-                        let filtered = state.filtered_repos();
-                        if let Some(repo) = filtered.get(state.card_selected) {
-                            let repo_full_name = repo.full_name.clone();
-                            state.screen = Screen::RepoDetail {
-                                repo_full_name,
-                                section: RepoSection::PRs,
-                            };
-                            state.detail_selected = 0;
-                            state.repo_prs.clear();
-                            state.repo_issues.clear();
-                            state.repo_ci.clear();
-                            state.loading.insert("repo_detail".to_string());
-                            state.search_query.clear();
-                            state.search_mode = false;
+                        if state.home_focus == HomeFocus::FilterBar {
+                            state.home_focus = HomeFocus::Repos;
+                        } else {
+                            // Drill into repo detail (keep existing code)
+                            let filtered = state.filtered_repos();
+                            if let Some(repo) = filtered.get(state.card_selected) {
+                                let repo_full_name = repo.full_name.clone();
+                                state.screen = Screen::RepoDetail {
+                                    repo_full_name,
+                                    section: RepoSection::PRs,
+                                };
+                                state.detail_selected = 0;
+                                state.repo_prs.clear();
+                                state.repo_issues.clear();
+                                state.repo_ci.clear();
+                                state.loading.insert("repo_detail".to_string());
+                                state.search_query.clear();
+                                state.search_mode = false;
+                            }
                         }
                     }
                     Screen::RepoDetail { .. } => {
@@ -892,6 +930,64 @@ mod tests {
         assert_eq!(state.repos.len(), 2);
         assert_eq!(state.repos[0].full_name, "alice/good");
         assert_eq!(state.repos[1].full_name, "acme/nice");
+    }
+
+    #[test]
+    fn test_up_from_first_repo_moves_to_filter_bar() {
+        let mut state = AppState::new();
+        state.home_focus = HomeFocus::Repos;
+        state.card_selected = 0;
+        state.view_mode = ViewMode::List;
+        state.repos = vec![make_repo("a/b")];
+
+        update(&mut state, Message::Up);
+        assert_eq!(state.home_focus, HomeFocus::FilterBar);
+    }
+
+    #[test]
+    fn test_down_from_filter_bar_moves_to_repos() {
+        let mut state = AppState::new();
+        state.home_focus = HomeFocus::FilterBar;
+        state.repos = vec![make_repo("a/b")];
+
+        update(&mut state, Message::Down);
+        assert_eq!(state.home_focus, HomeFocus::Repos);
+    }
+
+    #[test]
+    fn test_left_right_on_filter_bar() {
+        let mut state = AppState::new();
+        state.home_focus = HomeFocus::FilterBar;
+        state.filter_index = 0;
+        state.repos = vec![make_repo("alice/foo"), make_repo("acme/bar")];
+        state.user_info = Some(crate::github::UserInfo {
+            login: "alice".to_string(),
+            avatar_url: String::new(),
+            public_repos: 1,
+            followers: 0,
+        });
+        // filter_options: All, Public, Private, acme
+        update(&mut state, Message::Right);
+        assert_eq!(state.filter_index, 1);
+        assert_eq!(state.repo_filter, RepoFilter::Public);
+
+        update(&mut state, Message::Right);
+        assert_eq!(state.filter_index, 2);
+        assert_eq!(state.repo_filter, RepoFilter::Private);
+
+        update(&mut state, Message::Left);
+        assert_eq!(state.filter_index, 1);
+        assert_eq!(state.repo_filter, RepoFilter::Public);
+    }
+
+    #[test]
+    fn test_select_on_filter_bar_drops_to_repos() {
+        let mut state = AppState::new();
+        state.home_focus = HomeFocus::FilterBar;
+        state.repos = vec![make_repo("a/b")];
+
+        update(&mut state, Message::Select);
+        assert_eq!(state.home_focus, HomeFocus::Repos);
     }
 
     // ── Test helpers ──
