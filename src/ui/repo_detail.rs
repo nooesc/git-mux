@@ -137,8 +137,8 @@ fn render_pr_list(frame: &mut Frame, area: Rect, state: &AppState) {
     for (idx, item) in items.iter().enumerate() {
         if let crate::app::DetailItem::Pr(pr) = item {
             let selected = idx == state.detail_selected;
-            let icon = if pr.draft { "○" } else if pr.state == "closed" { "◆" } else { "●" };
-            let icon_color = if pr.draft { Color::DarkGray } else if pr.state == "closed" { Color::Magenta } else { Color::Green };
+            let icon = if pr.draft { "○" } else if pr.merged { "◆" } else if pr.state == "closed" { "●" } else { "●" };
+            let icon_color = if pr.draft { Color::DarkGray } else if pr.merged { Color::Magenta } else if pr.state == "closed" { Color::Red } else { Color::Green };
 
             let style = if selected {
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
@@ -161,11 +161,17 @@ fn render_pr_list(frame: &mut Frame, area: Rect, state: &AppState) {
                 Span::raw("  "),
                 Span::styled(&pr.user, Style::default().fg(Color::Magenta)),
             ]));
+            let diff_stats = if pr.additions > 0 || pr.deletions > 0 {
+                format!("  +{} -{}", pr.additions, pr.deletions)
+            } else {
+                String::new()
+            };
             lines.push(Line::from(vec![
                 Span::raw("         "),
                 Span::styled(format!("{} ← {}", pr.base_ref, pr.head_ref), Style::default().fg(Color::DarkGray)),
                 Span::raw("  "),
                 Span::styled(age, Style::default().fg(Color::DarkGray)),
+                Span::styled(diff_stats, Style::default().fg(Color::Green)),
             ]));
             lines.push(Line::from(""));
         }
@@ -212,7 +218,8 @@ fn render_issue_list(frame: &mut Frame, area: Rect, state: &AppState) {
 
             let age = issue.updated_at.map(|dt| {
                 let ago = Utc::now().signed_duration_since(dt);
-                if ago.num_hours() < 24 { format!("{}h ago", ago.num_hours()) }
+                if ago.num_hours() < 1 { format!("{}m ago", ago.num_minutes()) }
+                else if ago.num_hours() < 24 { format!("{}h ago", ago.num_hours()) }
                 else { format!("{}d ago", ago.num_days()) }
             }).unwrap_or_default();
 

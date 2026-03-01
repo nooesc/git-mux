@@ -12,20 +12,19 @@ use crate::github::repos::RepoInfo;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     // Split: profile+graph panel on top, card grid below
-    let profile_height = if state.term_width >= 80 { 10 } else { 0 };
-    let graph_or_profile = if profile_height > 0 {
-        Constraint::Length(profile_height)
-    } else {
-        Constraint::Length(0)
-    };
+    let show_avatar = state.term_width >= 80;
+    let profile_height: u16 = if show_avatar { 10 } else { 9 }; // graph only when narrow
 
     let [top_area, cards_area] = Layout::vertical([
-        graph_or_profile,
+        Constraint::Length(profile_height),
         Constraint::Fill(1),
     ]).areas(area);
 
-    if profile_height > 0 {
+    if show_avatar {
         render_profile_and_graph(frame, top_area, state);
+    } else {
+        // Just render the heatmap without the avatar/profile panel
+        render_heatmap(frame, top_area, &state.contributions.days, state.contributions.total);
     }
 
     let filtered = state.filtered_repos();
@@ -61,13 +60,13 @@ fn render_profile_and_graph(frame: &mut Frame, area: Rect, state: &AppState) {
             &info.login,
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         )));
+        let total_stars: u32 = state.repos.iter().map(|r| r.stargazers_count).sum();
         profile_lines.push(Line::from(Span::styled(
-            format!("{} repos", info.public_repos),
+            format!("{} repos · {} orgs", info.public_repos, count_orgs(&state.repos)),
             Style::default().fg(Color::DarkGray),
         )));
-        let org_count = count_orgs(&state.repos);
         profile_lines.push(Line::from(Span::styled(
-            format!("{} orgs · {} followers", org_count, info.followers),
+            format!("★ {} · {} followers", total_stars, info.followers),
             Style::default().fg(Color::DarkGray),
         )));
     } else {
@@ -301,16 +300,19 @@ fn render_card(frame: &mut Frame, area: Rect, repo: &RepoInfo, selected: bool) {
             format!(" {}", desc_truncated),
             Style::default().fg(Color::DarkGray),
         )),
-        // Line 3: blank or more description
+        // Line 3: blank
         Line::from(""),
-        // Line 4: language + forks + pushed
+        // Line 4: language + forks
         Line::from(vec![
             Span::styled(format!(" {}", lang), Style::default().fg(Color::Magenta)),
             Span::raw("  "),
             Span::styled(&forks, Style::default().fg(Color::DarkGray)),
-            Span::raw("  "),
-            Span::styled(&pushed, Style::default().fg(Color::DarkGray)),
         ]),
+        // Line 5: last push time
+        Line::from(Span::styled(
+            format!(" {}", pushed),
+            Style::default().fg(Color::DarkGray),
+        )),
     ];
 
     // Trim to available height
@@ -370,12 +372,19 @@ fn render_list_view(frame: &mut Frame, area: Rect, repos: &[&RepoInfo], selected
                 Style::default()
             };
 
+            let forks = if repo.forks_count > 0 {
+                format!("⎚{}", repo.forks_count)
+            } else {
+                String::new()
+            };
+
             lines.push(Line::from(vec![
                 Span::styled(prefix, style),
                 Span::raw(visibility),
                 Span::styled(format!(" {:<20}", name), style),
                 Span::styled(format!("{:<8}", lang), Style::default().fg(Color::Magenta)),
                 Span::styled(format!("{:<6}", stars), Style::default().fg(Color::Yellow)),
+                Span::styled(format!("{:<5}", forks), Style::default().fg(Color::DarkGray)),
                 Span::styled(pushed, Style::default().fg(Color::DarkGray)),
             ]));
         }

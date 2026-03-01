@@ -15,6 +15,9 @@ pub struct PrInfo {
     pub user: String,
     pub head_ref: String,
     pub base_ref: String,
+    pub merged: bool,
+    pub additions: u32,
+    pub deletions: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -66,6 +69,9 @@ impl GitHubClient {
                 user: item["user"]["login"].as_str().unwrap_or("").to_string(),
                 head_ref: item["head"]["ref"].as_str().unwrap_or("").to_string(),
                 base_ref: item["base"]["ref"].as_str().unwrap_or("").to_string(),
+                merged: false,
+                additions: 0,
+                deletions: 0,
             }
         }).collect())
     }
@@ -132,6 +138,9 @@ impl GitHubClient {
                     user: item["user"]["login"].as_str().unwrap_or("").to_string(),
                     head_ref: item["head"]["ref"].as_str().unwrap_or("").to_string(),
                     base_ref: item["base"]["ref"].as_str().unwrap_or("").to_string(),
+                    merged: item["merged_at"].is_string(),
+                    additions: item["additions"].as_u64().unwrap_or(0) as u32,
+                    deletions: item["deletions"].as_u64().unwrap_or(0) as u32,
                 });
             }
 

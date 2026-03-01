@@ -81,10 +81,23 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
             Span::raw("  "),
             Span::styled(&notif.repo_full_name, Style::default().fg(Color::DarkGray)),
         ]));
+        let reason_text = match notif.reason.as_str() {
+            "review_requested" => "Review requested",
+            "mention" => "Mentioned",
+            "assign" => "Assigned",
+            "ci_activity" => "CI activity",
+            "subscribed" => "Subscribed",
+            "author" => "Authored",
+            "comment" => "Commented",
+            "state_change" => "State changed",
+            "team_mention" => "Team mentioned",
+            "manual" => "Manually subscribed",
+            _ => &notif.reason,
+        };
         lines.push(Line::from(vec![
             Span::raw("         "),
-            Span::styled(&notif.subject_title, style),
-            Span::raw("  "),
+            Span::styled(reason_text, style),
+            Span::raw(" · "),
             Span::styled(age, Style::default().fg(Color::DarkGray)),
         ]));
         lines.push(Line::from(""));
