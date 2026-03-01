@@ -46,6 +46,23 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
         state.loading.insert(app::View::Repos);
     }
 
+    // Spawn PR fetch
+    {
+        let tx = bg_tx.clone();
+        rt.spawn(async move {
+            match crate::github::GitHubClient::new().await {
+                Ok(client) => {
+                    match client.fetch_prs().await {
+                        Ok(prs) => { let _ = tx.send(Message::PrsLoaded(prs)); }
+                        Err(e) => { let _ = tx.send(Message::Error(format!("Failed to fetch PRs: {}", e))); }
+                    }
+                }
+                Err(e) => { let _ = tx.send(Message::Error(format!("Auth failed: {}", e))); }
+            }
+        });
+        state.loading.insert(app::View::PRs);
+    }
+
     loop {
         // Drain background messages
         while let Ok(msg) = bg_rx.try_recv() {
@@ -64,8 +81,12 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                     KeyCode::Char('4') => Some(Message::SwitchView(View::Notifications)),
                     KeyCode::Char('5') => Some(Message::SwitchView(View::CI)),
                     KeyCode::Tab => {
-                        let next = (state.active_view.index() + 1) % View::ALL.len();
-                        Some(Message::SwitchView(View::ALL[next]))
+                        if state.active_view == View::PRs {
+                            Some(Message::TogglePrSection)
+                        } else {
+                            let next = (state.active_view.index() + 1) % View::ALL.len();
+                            Some(Message::SwitchView(View::ALL[next]))
+                        }
                     }
                     KeyCode::BackTab => {
                         let prev = if state.active_view.index() == 0 {

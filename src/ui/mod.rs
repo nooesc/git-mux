@@ -1,3 +1,4 @@
+pub mod prs;
 pub mod repos;
 
 use ratatui::Frame;
@@ -7,6 +8,7 @@ use crate::app::{AppState, View};
 pub fn render_content(frame: &mut Frame, area: Rect, state: &AppState) {
     match state.active_view {
         View::Repos => repos::render(frame, area, state),
+        View::PRs => prs::render(frame, area, state),
         _ => {
             let placeholder = ratatui::widgets::Paragraph::new(
                 format!("{} (coming soon)", state.active_view.label())

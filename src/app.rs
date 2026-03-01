@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use crate::github::prs::PrState;
 use crate::github::repos::RepoInfo;
 
 // ── View enum ──
@@ -44,6 +45,12 @@ impl View {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrSection {
+    Authored,
+    ReviewRequested,
+}
+
 // ── App State ──
 
 pub struct AppState {
@@ -59,6 +66,11 @@ pub struct AppState {
     pub repos: Vec<RepoInfo>,
     pub repo_selected: usize,
 
+    // PR state
+    pub prs: PrState,
+    pub pr_selected: usize,
+    pub pr_section: PrSection,
+
     // Open-in-browser
     pub pending_open_url: Option<String>,
 }
@@ -73,6 +85,9 @@ impl AppState {
             error: None,
             repos: Vec::new(),
             repo_selected: 0,
+            prs: PrState::default(),
+            pr_selected: 0,
+            pr_section: PrSection::Authored,
             pending_open_url: None,
         }
     }
@@ -93,6 +108,8 @@ pub enum Message {
     Error(String),
     DismissError,
     ReposLoaded(Vec<RepoInfo>),
+    PrsLoaded(PrState),
+    TogglePrSection,
 }
 
 // ── Update ──
@@ -108,11 +125,28 @@ pub fn update(state: &mut AppState, msg: Message) {
             state.loading.remove(&View::Repos);
             state.last_refresh.insert(View::Repos, Instant::now());
         }
+        Message::PrsLoaded(prs) => {
+            state.prs = prs;
+            state.loading.remove(&View::PRs);
+            state.last_refresh.insert(View::PRs, Instant::now());
+        }
+        Message::TogglePrSection => {
+            state.pr_section = match state.pr_section {
+                PrSection::Authored => PrSection::ReviewRequested,
+                PrSection::ReviewRequested => PrSection::Authored,
+            };
+            state.pr_selected = 0;
+        }
         Message::Up => {
             match state.active_view {
                 View::Repos => {
                     if state.repo_selected > 0 {
                         state.repo_selected -= 1;
+                    }
+                }
+                View::PRs => {
+                    if state.pr_selected > 0 {
+                        state.pr_selected -= 1;
                     }
                 }
                 _ => {}
@@ -125,6 +159,15 @@ pub fn update(state: &mut AppState, msg: Message) {
                         state.repo_selected += 1;
                     }
                 }
+                View::PRs => {
+                    let len = match state.pr_section {
+                        PrSection::Authored => state.prs.authored.len(),
+                        PrSection::ReviewRequested => state.prs.review_requested.len(),
+                    };
+                    if state.pr_selected < len.saturating_sub(1) {
+                        state.pr_selected += 1;
+                    }
+                }
                 _ => {}
             }
         }
@@ -133,6 +176,15 @@ pub fn update(state: &mut AppState, msg: Message) {
                 View::Repos => {
                     if let Some(repo) = state.repos.get(state.repo_selected) {
                         state.pending_open_url = Some(repo.html_url.clone());
+                    }
+                }
+                View::PRs => {
+                    let pr = match state.pr_section {
+                        PrSection::Authored => state.prs.authored.get(state.pr_selected),
+                        PrSection::ReviewRequested => state.prs.review_requested.get(state.pr_selected),
+                    };
+                    if let Some(pr) = pr {
+                        state.pending_open_url = Some(pr.html_url.clone());
                     }
                 }
                 _ => {}
