@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{AppState, ViewMode};
+use crate::app::{AppState, HomeFocus, RepoFilter, ViewMode};
 use crate::github::avatar;
 use crate::github::contributions::ContributionDay;
 use crate::github::repos::RepoInfo;
@@ -15,8 +15,9 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let show_avatar = state.term_width >= 80;
     let profile_height: u16 = if show_avatar { 14 } else { 10 };
 
-    let [top_area, cards_area] = Layout::vertical([
+    let [top_area, filter_area, cards_area] = Layout::vertical([
         Constraint::Length(profile_height),
+        Constraint::Length(1),
         Constraint::Fill(1),
     ]).areas(area);
 
@@ -26,6 +27,8 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         // Just render the heatmap without the avatar/profile panel
         render_heatmap(frame, top_area, &state.contributions.days, state.contributions.total);
     }
+
+    render_filter_bar(frame, filter_area, state);
 
     let filtered = state.filtered_repos();
     match state.view_mode {
@@ -80,6 +83,43 @@ fn render_profile_and_graph(frame: &mut Frame, area: Rect, state: &AppState) {
 
     // ── Contribution graph ──
     render_heatmap(frame, graph_area, &state.contributions.days, state.contributions.total);
+}
+
+fn render_filter_bar(frame: &mut Frame, area: Rect, state: &AppState) {
+    let opts = state.filter_options();
+    let focused = state.home_focus == HomeFocus::FilterBar;
+
+    let mut spans: Vec<Span> = vec![Span::raw("  ")];
+
+    for (i, opt) in opts.iter().enumerate() {
+        let label = match opt {
+            RepoFilter::All => "All".to_string(),
+            RepoFilter::Public => "Public".to_string(),
+            RepoFilter::Private => "Private".to_string(),
+            RepoFilter::Org(name) => name.clone(),
+        };
+
+        let is_active = *opt == state.repo_filter;
+        let is_cursor = focused && i == state.filter_index;
+
+        let style = if is_active && is_cursor {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else if is_active {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if is_cursor {
+            Style::default().fg(Color::White).add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        spans.push(Span::styled(format!(" {} ", label), style));
+
+        if i + 1 < opts.len() {
+            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_heatmap(frame: &mut Frame, area: Rect, days: &[ContributionDay], total: u32) {
