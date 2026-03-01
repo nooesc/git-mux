@@ -1,3 +1,4 @@
+pub mod ci;
 pub mod contributions;
 pub mod notifications;
 pub mod prs;
@@ -13,13 +14,6 @@ pub fn render_content(frame: &mut Frame, area: Rect, state: &AppState) {
         View::PRs => prs::render(frame, area, state),
         View::Graph => contributions::render(frame, area, state),
         View::Notifications => notifications::render(frame, area, state),
-        _ => {
-            let placeholder = ratatui::widgets::Paragraph::new(
-                format!("{} (coming soon)", state.active_view.label())
-            )
-            .alignment(ratatui::layout::Alignment::Center)
-            .block(ratatui::widgets::Block::default().borders(ratatui::widgets::Borders::ALL));
-            frame.render_widget(placeholder, area);
-        }
+        View::CI => ci::render(frame, area, state),
     }
 }

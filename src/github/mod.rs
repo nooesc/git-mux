@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod ci;
 pub mod contributions;
 pub mod notifications;
 pub mod prs;

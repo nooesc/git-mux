@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use crate::github::ci::WorkflowRun;
 use crate::github::contributions::ContributionData;
 use crate::github::notifications::Notification as GhNotification;
 use crate::github::prs::PrState;
@@ -80,6 +81,10 @@ pub struct AppState {
     pub notifications: Vec<GhNotification>,
     pub notif_selected: usize,
 
+    // CI
+    pub ci_runs: Vec<WorkflowRun>,
+    pub ci_selected: usize,
+
     // Open-in-browser
     pub pending_open_url: Option<String>,
 }
@@ -100,6 +105,8 @@ impl AppState {
             contributions: ContributionData::default(),
             notifications: Vec::new(),
             notif_selected: 0,
+            ci_runs: Vec::new(),
+            ci_selected: 0,
             pending_open_url: None,
         }
     }
@@ -123,6 +130,7 @@ pub enum Message {
     PrsLoaded(PrState),
     ContributionsLoaded(ContributionData),
     NotificationsLoaded(Vec<GhNotification>),
+    CiRunsLoaded(Vec<WorkflowRun>),
     MarkNotifRead(String),
     TogglePrSection,
 }
@@ -155,6 +163,11 @@ pub fn update(state: &mut AppState, msg: Message) {
             state.loading.remove(&View::Notifications);
             state.last_refresh.insert(View::Notifications, Instant::now());
         }
+        Message::CiRunsLoaded(runs) => {
+            state.ci_runs = runs;
+            state.loading.remove(&View::CI);
+            state.last_refresh.insert(View::CI, Instant::now());
+        }
         Message::MarkNotifRead(thread_id) => {
             // Mark the notification as read locally
             if let Some(notif) = state.notifications.iter_mut().find(|n| n.id == thread_id) {
@@ -185,6 +198,11 @@ pub fn update(state: &mut AppState, msg: Message) {
                         state.notif_selected -= 1;
                     }
                 }
+                View::CI => {
+                    if state.ci_selected > 0 {
+                        state.ci_selected -= 1;
+                    }
+                }
                 _ => {}
             }
         }
@@ -207,6 +225,11 @@ pub fn update(state: &mut AppState, msg: Message) {
                 View::Notifications => {
                     if state.notif_selected < state.notifications.len().saturating_sub(1) {
                         state.notif_selected += 1;
+                    }
+                }
+                View::CI => {
+                    if state.ci_selected < state.ci_runs.len().saturating_sub(1) {
+                        state.ci_selected += 1;
                     }
                 }
                 _ => {}
@@ -233,6 +256,11 @@ pub fn update(state: &mut AppState, msg: Message) {
                         if let Some(ref url) = notif.url {
                             state.pending_open_url = Some(url.clone());
                         }
+                    }
+                }
+                View::CI => {
+                    if let Some(run) = state.ci_runs.get(state.ci_selected) {
+                        state.pending_open_url = Some(run.html_url.clone());
                     }
                 }
                 _ => {}

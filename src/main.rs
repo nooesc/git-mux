@@ -29,14 +29,20 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let (bg_tx, bg_rx) = std::sync::mpsc::channel::<Message>();
 
-    // Spawn initial data fetch
+    // Spawn repos + CI fetch (CI depends on repos)
     {
         let tx = bg_tx.clone();
         rt.spawn(async move {
             match crate::github::GitHubClient::new().await {
                 Ok(client) => {
                     match client.fetch_all_repos().await {
-                        Ok(repos) => { let _ = tx.send(Message::ReposLoaded(repos)); }
+                        Ok(repos) => {
+                            let _ = tx.send(Message::ReposLoaded(repos.clone()));
+                            match client.fetch_ci_runs(&repos).await {
+                                Ok(runs) => { let _ = tx.send(Message::CiRunsLoaded(runs)); }
+                                Err(e) => { let _ = tx.send(Message::Error(format!("CI: {}", e))); }
+                            }
+                        }
                         Err(e) => { let _ = tx.send(Message::Error(format!("Failed to fetch repos: {}", e))); }
                     }
                 }
@@ -44,6 +50,7 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
             }
         });
         state.loading.insert(app::View::Repos);
+        state.loading.insert(app::View::CI);
     }
 
     // Spawn PR fetch
@@ -130,11 +137,33 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                         };
                         Some(Message::SwitchView(View::ALL[prev]))
                     }
-                    KeyCode::Char('r') => Some(Message::ForceRefresh),
                     KeyCode::Char('j') | KeyCode::Down => Some(Message::Down),
                     KeyCode::Char('k') | KeyCode::Up => Some(Message::Up),
                     KeyCode::Enter => Some(Message::Select),
                     KeyCode::Esc => Some(Message::Back),
+                    KeyCode::Char('r') if state.active_view == View::CI => {
+                        if let Some(run) = state.ci_runs.get(state.ci_selected) {
+                            let parts: Vec<&str> = run.repo_full_name.splitn(2, '/').collect();
+                            if parts.len() == 2 {
+                                let owner = parts[0].to_string();
+                                let repo = parts[1].to_string();
+                                let run_id = run.id;
+                                let tx = bg_tx.clone();
+                                rt.spawn(async move {
+                                    match crate::github::GitHubClient::new().await {
+                                        Ok(client) => {
+                                            if let Err(e) = client.rerun_workflow(&owner, &repo, run_id).await {
+                                                let _ = tx.send(Message::Error(format!("Re-run failed: {}", e)));
+                                            }
+                                        }
+                                        Err(e) => { let _ = tx.send(Message::Error(format!("Auth failed: {}", e))); }
+                                    }
+                                });
+                            }
+                        }
+                        None
+                    }
+                    KeyCode::Char('r') if state.active_view != View::CI => Some(Message::ForceRefresh),
                     KeyCode::Char('m') if state.active_view == View::Notifications => {
                         if let Some(notif) = state.notifications.get(state.notif_selected) {
                             let thread_id = notif.id.clone();
