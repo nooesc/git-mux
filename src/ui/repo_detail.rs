@@ -13,8 +13,12 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         _ => return,
     };
 
-    let [header_area, tabs_area, content_area] = Layout::vertical([
+    let has_activity = !state.repo_commit_activity.is_empty();
+    let heatmap_height = if has_activity { 6 } else { 0 };
+
+    let [header_area, heatmap_area, tabs_area, content_area] = Layout::vertical([
         Constraint::Length(4),
+        Constraint::Length(heatmap_height),
         Constraint::Length(2),
         Constraint::Fill(1),
     ]).areas(area);
@@ -65,6 +69,11 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 
     frame.render_widget(Paragraph::new(header_lines), header_area);
+
+    // ── Repo commit heatmap (always visible) ──
+    if has_activity {
+        render_repo_heatmap(frame, heatmap_area, &state.repo_commit_activity);
+    }
 
     // ── Section tabs ──
     let pr_count = state.repo_prs.len();
@@ -321,4 +330,72 @@ fn render_ci_list(frame: &mut Frame, area: Rect, state: &AppState) {
     let scroll = if selected_top + item_height > visible { selected_top + item_height - visible } else { 0 };
     let visible_lines: Vec<Line> = lines.into_iter().skip(scroll).take(visible).collect();
     frame.render_widget(Paragraph::new(visible_lines), area);
+}
+
+fn render_repo_heatmap(
+    frame: &mut Frame,
+    area: Rect,
+    activity: &[crate::github::commits::WeeklyCommitActivity],
+) {
+    if activity.is_empty() { return; }
+
+    // Find max daily count for level scaling
+    let max_daily = activity.iter()
+        .flat_map(|w| w.days.iter())
+        .copied()
+        .max()
+        .unwrap_or(1)
+        .max(1);
+
+    // Limit weeks to fit width
+    let label_width = 5usize; // "Mon " etc
+    let max_weeks = (area.width as usize).saturating_sub(label_width);
+    let visible = if activity.len() > max_weeks {
+        &activity[activity.len() - max_weeks..]
+    } else {
+        activity
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Day rows: Mon, Wed, Fri (compact — skip Tue, Thu, Sat, Sun)
+    // GitHub stats API returns days as [Sun, Mon, Tue, Wed, Thu, Fri, Sat]
+    let day_rows = [(1, "Mon"), (3, "Wed"), (5, "Fri")];
+    for (day_idx, day_label) in day_rows {
+        let mut spans: Vec<Span> = vec![Span::styled(
+            format!(" {} ", day_label),
+            Style::default().fg(Color::DarkGray),
+        )];
+        for week in visible {
+            let count = week.days[day_idx];
+            let level = if count == 0 { 0 }
+                else if count <= max_daily / 4 { 1 }
+                else if count <= max_daily / 2 { 2 }
+                else if count <= max_daily * 3 / 4 { 3 }
+                else { 4 };
+            let (ch, style) = level_to_cell(level);
+            spans.push(Span::styled(String::from(ch), style));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    // Stats line
+    let total: u32 = activity.iter().map(|w| w.total).sum();
+    lines.push(Line::from(Span::styled(
+        format!("      {} commits this year", total),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn level_to_cell(level: u8) -> (char, Style) {
+    match level {
+        0 => ('\u{2591}', Style::default().fg(Color::DarkGray)),
+        1 => ('\u{2592}', Style::default().fg(Color::Green)),
+        2 => ('\u{2593}', Style::default().fg(Color::Green)),
+        3 => ('\u{2588}', Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        4 => ('\u{2588}', Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
+        _ => ('\u{2591}', Style::default().fg(Color::DarkGray)),
+    }
 }
