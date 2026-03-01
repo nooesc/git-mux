@@ -1,3 +1,5 @@
+mod github;
+
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::Alignment;
