@@ -475,10 +475,15 @@ pub fn update(state: &mut AppState, msg: Message) {
                             }
                         }
                     }
-                    Screen::RepoDetail { .. } => {
-                        let len = state.filtered_detail_items().len();
-                        if state.detail_selected < len.saturating_sub(1) {
+                    Screen::RepoDetail { section, .. } => {
+                        if *section == RepoSection::Info {
+                            // Info tab: scroll README line by line (no upper bound — just increment)
                             state.detail_selected += 1;
+                        } else {
+                            let len = state.filtered_detail_items().len();
+                            if state.detail_selected < len.saturating_sub(1) {
+                                state.detail_selected += 1;
+                            }
                         }
                     }
                 }

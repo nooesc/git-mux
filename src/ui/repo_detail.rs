@@ -406,14 +406,165 @@ fn render_commit_list(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 fn render_readme(frame: &mut Frame, area: Rect, state: &AppState) {
-    let text = match &state.repo_readme {
-        Some(content) => content.as_str(),
-        None => "  No README available",
+    let content = match &state.repo_readme {
+        Some(c) => c,
+        None => {
+            frame.render_widget(
+                Paragraph::new("  No README available").style(Style::default().fg(Color::DarkGray)),
+                area,
+            );
+            return;
+        }
     };
-    frame.render_widget(
-        Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
-        area,
-    );
+
+    let mut lines: Vec<Line> = Vec::new();
+    let mut in_code_block = false;
+
+    for raw_line in content.lines() {
+        // Code block toggle
+        if raw_line.trim_start().starts_with("```") {
+            in_code_block = !in_code_block;
+            if in_code_block {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", raw_line),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", raw_line),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+            continue;
+        }
+
+        if in_code_block {
+            lines.push(Line::from(Span::styled(
+                format!("    {}", raw_line),
+                Style::default().fg(Color::Green),
+            )));
+            continue;
+        }
+
+        let trimmed = raw_line.trim();
+
+        // Headers
+        if trimmed.starts_with("### ") {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", &trimmed[4..]),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )));
+        } else if trimmed.starts_with("## ") {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", &trimmed[3..]),
+                Style::default().fg(Color::Cyan),
+            )));
+        } else if trimmed.starts_with("# ") {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", &trimmed[2..]),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )));
+        }
+        // List items
+        else if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("• ", Style::default().fg(Color::Cyan)),
+                Span::raw(trimmed[2..].to_string()),
+            ]));
+        }
+        // Blank lines
+        else if trimmed.is_empty() {
+            lines.push(Line::from(""));
+        }
+        // Regular text — parse inline formatting
+        else {
+            lines.push(parse_inline_markdown(trimmed));
+        }
+    }
+
+    // Scroll based on detail_selected (repurpose as scroll position for Info tab)
+    let scroll = state.detail_selected;
+    let visible = area.height as usize;
+    let visible_lines: Vec<Line> = lines.into_iter().skip(scroll).take(visible).collect();
+    frame.render_widget(Paragraph::new(visible_lines), area);
+}
+
+/// Parse inline markdown: **bold**, *italic*, `code`, [links](url)
+fn parse_inline_markdown(text: &str) -> Line<'static> {
+    let mut spans: Vec<Span> = vec![Span::raw("  ".to_string())]; // left padding
+    let mut chars = text.chars().peekable();
+    let mut buf = String::new();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '`' => {
+                if !buf.is_empty() {
+                    spans.push(Span::raw(buf.clone()));
+                    buf.clear();
+                }
+                let mut code = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c == '`' { chars.next(); break; }
+                    code.push(c);
+                    chars.next();
+                }
+                spans.push(Span::styled(code, Style::default().fg(Color::Yellow)));
+            }
+            '*' if chars.peek() == Some(&'*') => {
+                chars.next(); // consume second *
+                if !buf.is_empty() {
+                    spans.push(Span::raw(buf.clone()));
+                    buf.clear();
+                }
+                let mut bold = String::new();
+                while let Some(c) = chars.next() {
+                    if c == '*' && chars.peek() == Some(&'*') { chars.next(); break; }
+                    bold.push(c);
+                }
+                spans.push(Span::styled(bold, Style::default().add_modifier(Modifier::BOLD)));
+            }
+            '*' => {
+                if !buf.is_empty() {
+                    spans.push(Span::raw(buf.clone()));
+                    buf.clear();
+                }
+                let mut italic = String::new();
+                while let Some(c) = chars.next() {
+                    if c == '*' { break; }
+                    italic.push(c);
+                }
+                spans.push(Span::styled(italic, Style::default().add_modifier(Modifier::ITALIC)));
+            }
+            '[' => {
+                if !buf.is_empty() {
+                    spans.push(Span::raw(buf.clone()));
+                    buf.clear();
+                }
+                let mut link_text = String::new();
+                while let Some(c) = chars.next() {
+                    if c == ']' { break; }
+                    link_text.push(c);
+                }
+                // Skip the (url) part
+                if chars.peek() == Some(&'(') {
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if c == ')' { break; }
+                    }
+                }
+                spans.push(Span::styled(
+                    link_text,
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+                ));
+            }
+            _ => buf.push(ch),
+        }
+    }
+    if !buf.is_empty() {
+        spans.push(Span::raw(buf));
+    }
+    Line::from(spans)
 }
 
 fn render_repo_heatmap(
