@@ -87,6 +87,16 @@ pub struct AppState {
 
     // Open-in-browser
     pub pending_open_url: Option<String>,
+
+    // Help overlay
+    pub show_help: bool,
+
+    // Error timing for auto-dismiss
+    pub error_at: Option<Instant>,
+
+    // Search
+    pub search_mode: bool,
+    pub search_query: String,
 }
 
 impl AppState {
@@ -108,7 +118,61 @@ impl AppState {
             ci_runs: Vec::new(),
             ci_selected: 0,
             pending_open_url: None,
+            show_help: false,
+            error_at: None,
+            search_mode: false,
+            search_query: String::new(),
         }
+    }
+
+    pub fn filtered_repos(&self) -> Vec<&RepoInfo> {
+        if self.search_query.is_empty() {
+            return self.repos.iter().collect();
+        }
+        let q = self.search_query.to_lowercase();
+        self.repos.iter().filter(|r| {
+            r.full_name.to_lowercase().contains(&q)
+                || r.description.as_ref().map(|d| d.to_lowercase().contains(&q)).unwrap_or(false)
+        }).collect()
+    }
+
+    pub fn filtered_prs(&self) -> Vec<&crate::github::prs::PrInfo> {
+        let list = match self.pr_section {
+            PrSection::Authored => &self.prs.authored,
+            PrSection::ReviewRequested => &self.prs.review_requested,
+        };
+        if self.search_query.is_empty() {
+            return list.iter().collect();
+        }
+        let q = self.search_query.to_lowercase();
+        list.iter().filter(|pr| {
+            pr.title.to_lowercase().contains(&q)
+                || pr.repo_full_name.to_lowercase().contains(&q)
+                || pr.user.to_lowercase().contains(&q)
+        }).collect()
+    }
+
+    pub fn filtered_notifications(&self) -> Vec<&GhNotification> {
+        if self.search_query.is_empty() {
+            return self.notifications.iter().collect();
+        }
+        let q = self.search_query.to_lowercase();
+        self.notifications.iter().filter(|n| {
+            n.subject_title.to_lowercase().contains(&q)
+                || n.repo_full_name.to_lowercase().contains(&q)
+        }).collect()
+    }
+
+    pub fn filtered_ci_runs(&self) -> Vec<&crate::github::ci::WorkflowRun> {
+        if self.search_query.is_empty() {
+            return self.ci_runs.iter().collect();
+        }
+        let q = self.search_query.to_lowercase();
+        self.ci_runs.iter().filter(|r| {
+            r.name.to_lowercase().contains(&q)
+                || r.repo_full_name.to_lowercase().contains(&q)
+                || r.head_branch.to_lowercase().contains(&q)
+        }).collect()
     }
 }
 
@@ -133,6 +197,11 @@ pub enum Message {
     CiRunsLoaded(Vec<WorkflowRun>),
     MarkNotifRead(String),
     TogglePrSection,
+    ToggleHelp,
+    EnterSearch,
+    ExitSearch,
+    SearchInput(char),
+    SearchBackspace,
 }
 
 // ── Update ──
@@ -141,8 +210,14 @@ pub fn update(state: &mut AppState, msg: Message) {
     match msg {
         Message::Quit => state.should_quit = true,
         Message::SwitchView(view) => state.active_view = view,
-        Message::Error(e) => state.error = Some(e),
-        Message::DismissError => state.error = None,
+        Message::Error(e) => {
+            state.error = Some(e);
+            state.error_at = Some(Instant::now());
+        }
+        Message::DismissError => {
+            state.error = None;
+            state.error_at = None;
+        }
         Message::ReposLoaded(repos) => {
             state.repos = repos;
             state.loading.remove(&View::Repos);
@@ -266,7 +341,24 @@ pub fn update(state: &mut AppState, msg: Message) {
                 _ => {}
             }
         }
-        Message::Back | Message::Tick | Message::ForceRefresh => {}
+        Message::ToggleHelp => state.show_help = !state.show_help,
+        Message::EnterSearch => state.search_mode = true,
+        Message::ExitSearch => {
+            state.search_mode = false;
+            state.search_query.clear();
+        }
+        Message::SearchInput(c) => state.search_query.push(c),
+        Message::SearchBackspace => { state.search_query.pop(); }
+        Message::Tick => {
+            // Auto-dismiss error after 10 seconds
+            if let Some(at) = state.error_at {
+                if at.elapsed().as_secs() > 10 {
+                    state.error = None;
+                    state.error_at = None;
+                }
+            }
+        }
+        Message::Back | Message::ForceRefresh => {}
     }
 }
 

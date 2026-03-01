@@ -8,10 +8,10 @@ use anyhow::Result;
 use app::{AppState, Message, View, update};
 use crossterm::event::KeyCode;
 use event::{AppEvent, EventHandler};
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Tabs};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs};
 use ratatui::{DefaultTerminal, Frame};
 use std::time::Duration;
 
@@ -126,84 +126,103 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
 
         match events.next()? {
             AppEvent::Key(key) => {
-                let msg = match key.code {
-                    KeyCode::Char('q') => Some(Message::Quit),
-                    KeyCode::Char('1') => Some(Message::SwitchView(View::Repos)),
-                    KeyCode::Char('2') => Some(Message::SwitchView(View::PRs)),
-                    KeyCode::Char('3') => Some(Message::SwitchView(View::Graph)),
-                    KeyCode::Char('4') => Some(Message::SwitchView(View::Notifications)),
-                    KeyCode::Char('5') => Some(Message::SwitchView(View::CI)),
-                    KeyCode::Tab => {
-                        if state.active_view == View::PRs {
-                            Some(Message::TogglePrSection)
-                        } else {
-                            let next = (state.active_view.index() + 1) % View::ALL.len();
-                            Some(Message::SwitchView(View::ALL[next]))
+                // Search mode: route keys to search input
+                let msg = if state.search_mode {
+                    match key.code {
+                        KeyCode::Esc => Some(Message::ExitSearch),
+                        KeyCode::Backspace => Some(Message::SearchBackspace),
+                        KeyCode::Enter => Some(Message::ExitSearch),
+                        KeyCode::Char(c) => Some(Message::SearchInput(c)),
+                        _ => None,
+                    }
+                } else if state.show_help {
+                    // When help overlay is shown, only Esc and ? close it
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('?') => Some(Message::ToggleHelp),
+                        KeyCode::Char('q') => Some(Message::Quit),
+                        _ => None,
+                    }
+                } else {
+                    match key.code {
+                        KeyCode::Char('q') => Some(Message::Quit),
+                        KeyCode::Char('?') => Some(Message::ToggleHelp),
+                        KeyCode::Char('/') => Some(Message::EnterSearch),
+                        KeyCode::Char('1') => Some(Message::SwitchView(View::Repos)),
+                        KeyCode::Char('2') => Some(Message::SwitchView(View::PRs)),
+                        KeyCode::Char('3') => Some(Message::SwitchView(View::Graph)),
+                        KeyCode::Char('4') => Some(Message::SwitchView(View::Notifications)),
+                        KeyCode::Char('5') => Some(Message::SwitchView(View::CI)),
+                        KeyCode::Tab => {
+                            if state.active_view == View::PRs {
+                                Some(Message::TogglePrSection)
+                            } else {
+                                let next = (state.active_view.index() + 1) % View::ALL.len();
+                                Some(Message::SwitchView(View::ALL[next]))
+                            }
                         }
-                    }
-                    KeyCode::BackTab => {
-                        let prev = if state.active_view.index() == 0 {
-                            View::ALL.len() - 1
-                        } else {
-                            state.active_view.index() - 1
-                        };
-                        Some(Message::SwitchView(View::ALL[prev]))
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => Some(Message::Down),
-                    KeyCode::Char('k') | KeyCode::Up => Some(Message::Up),
-                    KeyCode::Enter => Some(Message::Select),
-                    KeyCode::Esc => Some(Message::Back),
-                    KeyCode::Char('r') if state.active_view == View::CI => {
-                        if let Some(run) = state.ci_runs.get(state.ci_selected) {
-                            let parts: Vec<&str> = run.repo_full_name.splitn(2, '/').collect();
-                            if parts.len() == 2 {
-                                let owner = parts[0].to_string();
-                                let repo = parts[1].to_string();
-                                let run_id = run.id;
+                        KeyCode::BackTab => {
+                            let prev = if state.active_view.index() == 0 {
+                                View::ALL.len() - 1
+                            } else {
+                                state.active_view.index() - 1
+                            };
+                            Some(Message::SwitchView(View::ALL[prev]))
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => Some(Message::Down),
+                        KeyCode::Char('k') | KeyCode::Up => Some(Message::Up),
+                        KeyCode::Enter => Some(Message::Select),
+                        KeyCode::Esc => Some(Message::Back),
+                        KeyCode::Char('r') if state.active_view == View::CI => {
+                            if let Some(run) = state.ci_runs.get(state.ci_selected) {
+                                let parts: Vec<&str> = run.repo_full_name.splitn(2, '/').collect();
+                                if parts.len() == 2 {
+                                    let owner = parts[0].to_string();
+                                    let repo = parts[1].to_string();
+                                    let run_id = run.id;
+                                    let tx = bg_tx.clone();
+                                    rt.spawn(async move {
+                                        match crate::github::GitHubClient::new().await {
+                                            Ok(client) => {
+                                                if let Err(e) = client.rerun_workflow(&owner, &repo, run_id).await {
+                                                    let _ = tx.send(Message::Error(format!("Re-run failed: {}", e)));
+                                                }
+                                            }
+                                            Err(e) => { let _ = tx.send(Message::Error(format!("Auth failed: {}", e))); }
+                                        }
+                                    });
+                                }
+                            }
+                            None
+                        }
+                        KeyCode::Char('r') if state.active_view != View::CI => {
+                            if !state.loading.contains(&state.active_view) {
+                                state.loading.insert(state.active_view);
+                                spawn_refresh(state.active_view, &rt, &bg_tx, &state);
+                            }
+                            Some(Message::ForceRefresh)
+                        }
+                        KeyCode::Char('m') if state.active_view == View::Notifications => {
+                            if let Some(notif) = state.notifications.get(state.notif_selected) {
+                                let thread_id = notif.id.clone();
                                 let tx = bg_tx.clone();
+                                let tid = thread_id.clone();
                                 rt.spawn(async move {
                                     match crate::github::GitHubClient::new().await {
                                         Ok(client) => {
-                                            if let Err(e) = client.rerun_workflow(&owner, &repo, run_id).await {
-                                                let _ = tx.send(Message::Error(format!("Re-run failed: {}", e)));
+                                            if let Err(e) = client.mark_notification_read(&tid).await {
+                                                let _ = tx.send(Message::Error(format!("Failed to mark read: {}", e)));
                                             }
                                         }
                                         Err(e) => { let _ = tx.send(Message::Error(format!("Auth failed: {}", e))); }
                                     }
                                 });
+                                Some(Message::MarkNotifRead(thread_id))
+                            } else {
+                                None
                             }
                         }
-                        None
+                        _ => None,
                     }
-                    KeyCode::Char('r') if state.active_view != View::CI => {
-                        if !state.loading.contains(&state.active_view) {
-                            state.loading.insert(state.active_view);
-                            spawn_refresh(state.active_view, &rt, &bg_tx, &state);
-                        }
-                        Some(Message::ForceRefresh)
-                    }
-                    KeyCode::Char('m') if state.active_view == View::Notifications => {
-                        if let Some(notif) = state.notifications.get(state.notif_selected) {
-                            let thread_id = notif.id.clone();
-                            // Spawn background task to mark as read via API
-                            let tx = bg_tx.clone();
-                            let tid = thread_id.clone();
-                            rt.spawn(async move {
-                                match crate::github::GitHubClient::new().await {
-                                    Ok(client) => {
-                                        if let Err(e) = client.mark_notification_read(&tid).await {
-                                            let _ = tx.send(Message::Error(format!("Failed to mark read: {}", e)));
-                                        }
-                                    }
-                                    Err(e) => { let _ = tx.send(Message::Error(format!("Auth failed: {}", e))); }
-                                }
-                            });
-                            Some(Message::MarkNotifRead(thread_id))
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
                 };
 
                 if let Some(msg) = msg {
@@ -350,7 +369,13 @@ fn render(frame: &mut Frame, state: &AppState) {
     ui::render_content(frame, content_area, state);
 
     // Status bar
-    let status = if let Some(ref err) = state.error {
+    let status = if state.search_mode {
+        Line::from(vec![
+            Span::styled(" / ", Style::default().fg(Color::Yellow)),
+            Span::styled(&state.search_query, Style::default().fg(Color::White)),
+            Span::styled("_", Style::default().fg(Color::DarkGray)),
+        ])
+    } else if let Some(ref err) = state.error {
         Line::from(Span::styled(
             format!(" Error: {} ", err),
             Style::default().fg(Color::Red),
@@ -363,4 +388,44 @@ fn render(frame: &mut Frame, state: &AppState) {
     };
 
     frame.render_widget(Paragraph::new(status), status_area);
+
+    // Help overlay
+    if state.show_help {
+        let help_text = vec![
+            Line::from("ghd -- GitHub Dashboard"),
+            Line::from(""),
+            Line::from("1-5        Switch view"),
+            Line::from("Tab        Next view / Toggle PR section"),
+            Line::from("Shift+Tab  Previous view"),
+            Line::from("j/k        Navigate"),
+            Line::from("Enter      Open in browser"),
+            Line::from("r          Refresh / Re-run (CI)"),
+            Line::from("m          Mark notification read"),
+            Line::from("/          Search"),
+            Line::from("?          Toggle this help"),
+            Line::from("q          Quit"),
+            Line::from(""),
+            Line::from("Esc        Close help / Cancel"),
+        ];
+        let popup_area = centered_rect(50, 60, frame.area());
+        frame.render_widget(Clear, popup_area);
+        let popup = Paragraph::new(help_text)
+            .block(Block::default().borders(Borders::ALL).title(" Help "))
+            .style(Style::default().fg(Color::White));
+        frame.render_widget(popup, popup_area);
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let [_, center_v, _] = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ]).areas(area);
+    let [_, center, _] = Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ]).areas(center_v);
+    center
 }
