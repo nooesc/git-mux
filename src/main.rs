@@ -35,7 +35,8 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
         _ => state.active_view = View::Repos,
     }
 
-    let events = EventHandler::new(Duration::from_secs(config.general.refresh_interval_secs));
+    // Poll at 200ms for UI responsiveness; auto-refresh uses timestamp checks
+    let events = EventHandler::new(Duration::from_millis(200));
 
     // Create tokio runtime for async background tasks
     let rt = tokio::runtime::Runtime::new()?;
