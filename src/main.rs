@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod event;
 mod github;
 mod ui;
@@ -22,8 +23,19 @@ fn main() -> Result<()> {
 }
 
 fn run(terminal: &mut DefaultTerminal) -> Result<()> {
+    let config = config::Config::load()?;
+
     let mut state = AppState::new();
-    let events = EventHandler::new(Duration::from_secs(1));
+    // Set initial view from config
+    match config.default_view() {
+        "prs" => state.active_view = View::PRs,
+        "graph" => state.active_view = View::Graph,
+        "notifications" => state.active_view = View::Notifications,
+        "ci" => state.active_view = View::CI,
+        _ => state.active_view = View::Repos,
+    }
+
+    let events = EventHandler::new(Duration::from_secs(config.general.refresh_interval_secs));
 
     // Create tokio runtime for async background tasks
     let rt = tokio::runtime::Runtime::new()?;
