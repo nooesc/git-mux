@@ -13,7 +13,7 @@ use crate::github::repos::RepoInfo;
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     // Split: profile+graph panel on top, card grid below
     let show_avatar = state.term_width >= 80;
-    let profile_height: u16 = if show_avatar { 10 } else { 9 }; // graph only when narrow
+    let profile_height: u16 = if show_avatar { 14 } else { 10 };
 
     let [top_area, cards_area] = Layout::vertical([
         Constraint::Length(profile_height),
@@ -35,45 +35,48 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 fn render_profile_and_graph(frame: &mut Frame, area: Rect, state: &AppState) {
-    // Side by side: avatar+info (fixed width) | contribution graph (fill)
-    let avatar_width = 16u16;
+    // Three columns: avatar | info | contribution graph
+    let avatar_width = 24u16;
+    let info_width = 20u16;
 
-    let [profile_area, graph_area] = Layout::horizontal([
+    let [avatar_area, info_area, graph_area] = Layout::horizontal([
         Constraint::Length(avatar_width),
+        Constraint::Length(info_width),
         Constraint::Fill(1),
     ]).areas(area);
 
-    // ── Profile panel ──
-    let mut profile_lines: Vec<Line> = Vec::new();
-
-    // Render avatar if available
+    // ── Avatar ──
+    let mut avatar_lines: Vec<Line> = Vec::new();
+    avatar_lines.push(Line::from("")); // top padding
     if let Some(ref img) = state.avatar {
-        let art_w = profile_area.width.saturating_sub(2); // padding
-        let art_h = profile_area.height.saturating_sub(4); // leave room for text
-        let avatar_lines = avatar::image_to_halfblocks(img, art_w, art_h);
-        profile_lines.extend(avatar_lines);
+        let art_w = avatar_area.width.saturating_sub(2);
+        let art_h = avatar_area.height.saturating_sub(2); // top pad + bottom pad
+        let half_blocks = avatar::image_to_halfblocks(img, art_w, art_h);
+        avatar_lines.extend(half_blocks);
     }
+    frame.render_widget(Paragraph::new(avatar_lines), avatar_area);
 
-    // User info
+    // ── User info (between avatar and graph) ──
+    let mut info_lines: Vec<Line> = Vec::new();
+    info_lines.push(Line::from("")); // top padding
     if let Some(ref info) = state.user_info {
-        profile_lines.push(Line::from(Span::styled(
+        info_lines.push(Line::from(Span::styled(
             &info.login,
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         )));
         let total_stars: u32 = state.repos.iter().map(|r| r.stargazers_count).sum();
-        profile_lines.push(Line::from(Span::styled(
+        info_lines.push(Line::from(Span::styled(
             format!("{} repos · {} orgs", info.public_repos, count_orgs(&state.repos)),
             Style::default().fg(Color::DarkGray),
         )));
-        profile_lines.push(Line::from(Span::styled(
+        info_lines.push(Line::from(Span::styled(
             format!("★ {} · {} followers", total_stars, info.followers),
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        profile_lines.push(Line::from(Span::styled("Loading...", Style::default().fg(Color::DarkGray))));
+        info_lines.push(Line::from(Span::styled("Loading...", Style::default().fg(Color::DarkGray))));
     }
-
-    frame.render_widget(Paragraph::new(profile_lines), profile_area);
+    frame.render_widget(Paragraph::new(info_lines), info_area);
 
     // ── Contribution graph ──
     render_heatmap(frame, graph_area, &state.contributions.days, state.contributions.total);
@@ -112,25 +115,34 @@ fn render_heatmap(frame: &mut Frame, area: Rect, days: &[ContributionDay], total
         &weeks
     };
 
-    // Month labels
-    let mut month_spans: Vec<Span> = vec![Span::raw("     ")];
-    let mut last_month = None;
-    for week in visible_weeks {
+    // Month labels (fixed-width buffer prevents overflow)
+    let chart_width = label_width as usize + visible_weeks.len();
+    let mut month_buf: Vec<char> = vec![' '; chart_width];
+    let mut last_month: Option<String> = None;
+    let mut last_label_end: usize = 0;
+
+    for (i, week) in visible_weeks.iter().enumerate() {
+        let col = label_width as usize + i;
         let month = week.iter().flatten().next().map(|d| d.date.format("%b").to_string());
         if month != last_month {
             if let Some(ref m) = month {
-                month_spans.push(Span::styled(m.clone(), Style::default().fg(Color::DarkGray)));
+                if col >= last_label_end + 1 {
+                    for (j, ch) in m.chars().enumerate() {
+                        if col + j < chart_width {
+                            month_buf[col + j] = ch;
+                        }
+                    }
+                    last_label_end = col + m.len();
+                }
                 last_month = month;
-            } else {
-                month_spans.push(Span::raw(" "));
             }
-        } else {
-            month_spans.push(Span::raw(" "));
         }
     }
 
+    let month_str: String = month_buf.into_iter().collect();
     let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(month_spans));
+    lines.push(Line::from("")); // top padding
+    lines.push(Line::from(Span::styled(month_str, Style::default().fg(Color::DarkGray))));
 
     let day_labels = ["Mon", "   ", "Wed", "   ", "Fri", "   ", "Sun"];
     for (row_idx, day_label) in day_labels.iter().enumerate() {
@@ -246,15 +258,16 @@ fn render_card_grid(frame: &mut Frame, area: Rect, repos: &[&RepoInfo], selected
 }
 
 fn render_card(frame: &mut Frame, area: Rect, repo: &RepoInfo, selected: bool) {
-    let border_style = if selected {
-        Style::default().fg(Color::Cyan)
+    let (border_style, bg) = if selected {
+        (Style::default().fg(Color::Cyan), Color::Rgb(30, 40, 50))
     } else {
-        Style::default().fg(Color::DarkGray)
+        (Style::default().fg(Color::DarkGray), Color::Reset)
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(border_style);
+        .border_style(border_style)
+        .style(Style::default().bg(bg));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -367,10 +380,10 @@ fn render_list_view(frame: &mut Frame, area: Rect, repos: &[&RepoInfo], selected
                 else { format!("{}d", ago.num_days()) }
             }).unwrap_or_default();
 
-            let style = if *flat_idx == selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            let (style, row_bg) = if *flat_idx == selected {
+                (Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD), Color::Rgb(30, 40, 50))
             } else {
-                Style::default()
+                (Style::default(), Color::Reset)
             };
 
             let forks = if repo.forks_count > 0 {
@@ -379,7 +392,7 @@ fn render_list_view(frame: &mut Frame, area: Rect, repos: &[&RepoInfo], selected
                 String::new()
             };
 
-            lines.push(Line::from(vec![
+            let line = Line::from(vec![
                 Span::styled(prefix, style),
                 Span::raw(visibility),
                 Span::styled(format!(" {:<20}", name), style),
@@ -387,7 +400,8 @@ fn render_list_view(frame: &mut Frame, area: Rect, repos: &[&RepoInfo], selected
                 Span::styled(format!("{:<6}", stars), Style::default().fg(Color::Yellow)),
                 Span::styled(format!("{:<5}", forks), Style::default().fg(Color::DarkGray)),
                 Span::styled(pushed, Style::default().fg(Color::DarkGray)),
-            ]));
+            ]).patch_style(Style::default().bg(row_bg));
+            lines.push(line);
         }
         lines.push(Line::from("")); // gap between groups
     }
