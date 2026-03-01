@@ -103,6 +103,12 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         RepoSection::PRs => render_pr_list(frame, content_area, state),
         RepoSection::Issues => render_issue_list(frame, content_area, state),
         RepoSection::CI => render_ci_list(frame, content_area, state),
+        RepoSection::Commits | RepoSection::Info => {
+            // TODO: render commits tab and info tab (Tasks 5 & 6)
+            let p = Paragraph::new("  Coming soon...")
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(p, content_area);
+        }
     }
 }
 

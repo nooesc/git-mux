@@ -4,6 +4,7 @@ use std::time::Instant;
 use image::DynamicImage;
 
 use crate::github::ci::WorkflowRun;
+use crate::github::commits::{CommitInfo, WeeklyCommitActivity};
 use crate::github::contributions::ContributionData;
 use crate::github::issues::IssueInfo;
 use crate::github::notifications::Notification;
@@ -27,6 +28,8 @@ pub enum RepoSection {
     PRs,
     Issues,
     CI,
+    Commits,
+    Info,
 }
 
 impl RepoSection {
@@ -34,7 +37,9 @@ impl RepoSection {
         match self {
             Self::PRs => Self::Issues,
             Self::Issues => Self::CI,
-            Self::CI => Self::PRs,
+            Self::CI => Self::Commits,
+            Self::Commits => Self::Info,
+            Self::Info => Self::PRs,
         }
     }
 
@@ -43,6 +48,8 @@ impl RepoSection {
             Self::PRs => "PRs",
             Self::Issues => "Issues",
             Self::CI => "CI",
+            Self::Commits => "Commits",
+            Self::Info => "Info",
         }
     }
 }
@@ -97,6 +104,9 @@ pub struct AppState {
     pub repo_issues: Vec<IssueInfo>,
     pub repo_ci: Vec<WorkflowRun>,
     pub detail_selected: usize,
+    pub repo_commits: Vec<CommitInfo>,
+    pub repo_commit_activity: Vec<WeeklyCommitActivity>,
+    pub repo_readme: Option<String>,
 
     // Notifications (global, shown as overlay)
     pub notifications: Vec<Notification>,
@@ -144,6 +154,9 @@ impl AppState {
             repo_issues: Vec::new(),
             repo_ci: Vec::new(),
             detail_selected: 0,
+            repo_commits: Vec::new(),
+            repo_commit_activity: Vec::new(),
+            repo_readme: None,
             notifications: Vec::new(),
             notif_selected: 0,
             show_notifications: false,
@@ -221,6 +234,12 @@ impl AppState {
             Screen::RepoDetail { section: RepoSection::CI, .. } => {
                 self.repo_ci.iter().map(|r| DetailItem::Ci(r)).collect()
             }
+            Screen::RepoDetail { section: RepoSection::Commits, .. } => {
+                self.repo_commits.iter().map(|c| DetailItem::Commit(c)).collect()
+            }
+            Screen::RepoDetail { section: RepoSection::Info, .. } => {
+                Vec::new()
+            }
             _ => Vec::new(),
         };
 
@@ -233,6 +252,7 @@ impl AppState {
                 DetailItem::Pr(pr) => pr.title.to_lowercase().contains(&q) || pr.user.to_lowercase().contains(&q),
                 DetailItem::Issue(i) => i.title.to_lowercase().contains(&q) || i.user.to_lowercase().contains(&q),
                 DetailItem::Ci(r) => r.name.to_lowercase().contains(&q) || r.head_branch.to_lowercase().contains(&q),
+                DetailItem::Commit(c) => c.message.to_lowercase().contains(&q) || c.author.to_lowercase().contains(&q),
             }
         }).collect()
     }
@@ -270,6 +290,7 @@ pub enum DetailItem<'a> {
     Pr(&'a PrInfo),
     Issue(&'a IssueInfo),
     Ci(&'a WorkflowRun),
+    Commit(&'a CommitInfo),
 }
 
 // ── Messages ──
@@ -299,6 +320,9 @@ pub enum Message {
         prs: Vec<PrInfo>,
         issues: Vec<IssueInfo>,
         ci: Vec<WorkflowRun>,
+        commits: Vec<CommitInfo>,
+        commit_activity: Vec<WeeklyCommitActivity>,
+        readme: Option<String>,
     },
 
     // Actions
@@ -363,13 +387,16 @@ pub fn update(state: &mut AppState, msg: Message) {
             state.notifications = notifs;
             state.loading.remove("notifications");
         }
-        Message::RepoDetailLoaded { repo, prs, issues, ci } => {
+        Message::RepoDetailLoaded { repo, prs, issues, ci, commits, commit_activity, readme } => {
             // Only apply if we're still on the same repo
             if let Screen::RepoDetail { repo_full_name, .. } = &state.screen {
                 if *repo_full_name == repo {
                     state.repo_prs = prs;
                     state.repo_issues = issues;
                     state.repo_ci = ci;
+                    state.repo_commits = commits;
+                    state.repo_commit_activity = commit_activity;
+                    state.repo_readme = readme;
                     state.loading.remove("repo_detail");
                 }
             }
@@ -518,6 +545,9 @@ pub fn update(state: &mut AppState, msg: Message) {
                                 state.repo_prs.clear();
                                 state.repo_issues.clear();
                                 state.repo_ci.clear();
+                                state.repo_commits.clear();
+                                state.repo_commit_activity.clear();
+                                state.repo_readme = None;
                                 state.loading.insert("repo_detail".to_string());
                                 state.search_query.clear();
                                 state.search_mode = false;
@@ -532,6 +562,7 @@ pub fn update(state: &mut AppState, msg: Message) {
                                 DetailItem::Pr(pr) => &pr.html_url,
                                 DetailItem::Issue(i) => &i.html_url,
                                 DetailItem::Ci(r) => &r.html_url,
+                                DetailItem::Commit(c) => &c.html_url,
                             };
                             state.pending_open_url = Some(url.clone());
                         }
@@ -759,6 +790,32 @@ mod tests {
         update(&mut state, Message::CycleSection);
         assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::CI, .. }));
 
+        update(&mut state, Message::CycleSection);
+        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Commits, .. }));
+
+        update(&mut state, Message::CycleSection);
+        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Info, .. }));
+
+        update(&mut state, Message::CycleSection);
+        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::PRs, .. }));
+    }
+
+    #[test]
+    fn test_cycle_section_five_way() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "user/repo".to_string(),
+            section: RepoSection::PRs,
+        };
+
+        update(&mut state, Message::CycleSection);
+        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Issues, .. }));
+        update(&mut state, Message::CycleSection);
+        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::CI, .. }));
+        update(&mut state, Message::CycleSection);
+        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Commits, .. }));
+        update(&mut state, Message::CycleSection);
+        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Info, .. }));
         update(&mut state, Message::CycleSection);
         assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::PRs, .. }));
     }

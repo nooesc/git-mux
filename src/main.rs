@@ -186,16 +186,22 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                         if parts.len() == 2 {
                                             let (owner, name) = (parts[0], parts[1]);
                                             if let Ok(client) = crate::github::GitHubClient::from_token() {
-                                                let (prs, issues, ci) = tokio::join!(
+                                                let (prs, issues, ci, commits, commit_activity, readme) = tokio::join!(
                                                     client.fetch_repo_prs(owner, name),
                                                     client.fetch_repo_issues(owner, name),
                                                     client.fetch_repo_ci(owner, name),
+                                                    client.fetch_repo_commits(owner, name),
+                                                    client.fetch_commit_activity(owner, name),
+                                                    client.fetch_readme(owner, name),
                                                 );
                                                 let _ = tx.send(Message::RepoDetailLoaded {
                                                     repo: format!("{}/{}", owner, name),
                                                     prs: prs.unwrap_or_default(),
                                                     issues: issues.unwrap_or_default(),
                                                     ci: ci.unwrap_or_default(),
+                                                    commits: commits.unwrap_or_default(),
+                                                    commit_activity: commit_activity.unwrap_or_default(),
+                                                    readme: readme.ok(),
                                                 });
                                             }
                                         }
