@@ -22,10 +22,18 @@ pub struct CommitInfo {
 
 impl GitHubClient {
     pub async fn fetch_commit_activity(&self, owner: &str, repo: &str) -> Result<Vec<WeeklyCommitActivity>> {
-        let result: serde_json::Value = self.octocrab.get(
-            format!("/repos/{}/{}/stats/commit_activity", owner, repo),
-            None::<&()>,
-        ).await?;
+        // GitHub stats API returns 202 while computing; retry a few times
+        let mut result = serde_json::Value::Null;
+        for _ in 0..3 {
+            result = self.octocrab.get(
+                format!("/repos/{}/{}/stats/commit_activity", owner, repo),
+                None::<&()>,
+            ).await.unwrap_or(serde_json::Value::Null);
+            if result.is_array() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
 
         let mut weeks = Vec::new();
         if let Some(arr) = result.as_array() {

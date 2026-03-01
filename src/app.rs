@@ -43,6 +43,16 @@ impl RepoSection {
         }
     }
 
+    pub fn prev(self) -> Self {
+        match self {
+            Self::PRs => Self::Info,
+            Self::Issues => Self::PRs,
+            Self::CI => Self::Issues,
+            Self::Commits => Self::CI,
+            Self::Info => Self::Commits,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::PRs => "PRs",
@@ -64,6 +74,12 @@ pub enum ViewMode {
 pub enum HomeFocus {
     FilterBar,
     Repos,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailFocus {
+    TabBar,
+    Content,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +114,9 @@ pub struct AppState {
     // Config (for exclusions)
     pub exclude_orgs: Vec<String>,
     pub exclude_repos: Vec<String>,
+
+    // Repo detail state
+    pub detail_focus: DetailFocus,
 
     // Repo detail data (lazy-loaded when entering a repo)
     pub repo_prs: Vec<PrInfo>,
@@ -150,6 +169,7 @@ impl AppState {
             filter_index: 0,
             exclude_orgs: Vec::new(),
             exclude_repos: Vec::new(),
+            detail_focus: DetailFocus::TabBar,
             repo_prs: Vec::new(),
             repo_issues: Vec::new(),
             repo_ci: Vec::new(),
@@ -439,7 +459,11 @@ pub fn update(state: &mut AppState, msg: Message) {
                         }
                     }
                     Screen::RepoDetail { .. } => {
-                        if state.detail_selected > 0 {
+                        if state.detail_focus == DetailFocus::TabBar {
+                            // Already at top
+                        } else if state.detail_selected == 0 {
+                            state.detail_focus = DetailFocus::TabBar;
+                        } else {
                             state.detail_selected -= 1;
                         }
                     }
@@ -476,8 +500,9 @@ pub fn update(state: &mut AppState, msg: Message) {
                         }
                     }
                     Screen::RepoDetail { section, .. } => {
-                        if *section == RepoSection::Info {
-                            // Info tab: scroll README line by line (no upper bound — just increment)
+                        if state.detail_focus == DetailFocus::TabBar {
+                            state.detail_focus = DetailFocus::Content;
+                        } else if *section == RepoSection::Info {
                             state.detail_selected += 1;
                         } else {
                             let len = state.filtered_detail_items().len();
@@ -491,33 +516,53 @@ pub fn update(state: &mut AppState, msg: Message) {
         }
 
         Message::Left => {
-            if state.screen == Screen::Home {
-                if state.home_focus == HomeFocus::FilterBar {
-                    if state.filter_index > 0 {
-                        state.filter_index -= 1;
-                        let opts = state.filter_options();
-                        state.repo_filter = opts[state.filter_index].clone();
-                        state.card_selected = 0;
+            match &state.screen {
+                Screen::Home => {
+                    if state.home_focus == HomeFocus::FilterBar {
+                        if state.filter_index > 0 {
+                            state.filter_index -= 1;
+                            let opts = state.filter_options();
+                            state.repo_filter = opts[state.filter_index].clone();
+                            state.card_selected = 0;
+                        }
+                    } else if state.view_mode == ViewMode::Cards && state.card_selected > 0 {
+                        state.card_selected -= 1;
                     }
-                } else if state.view_mode == ViewMode::Cards && state.card_selected > 0 {
-                    state.card_selected -= 1;
+                }
+                Screen::RepoDetail { .. } => {
+                    if state.detail_focus == DetailFocus::TabBar {
+                        if let Screen::RepoDetail { section, .. } = &mut state.screen {
+                            *section = section.prev();
+                            state.detail_selected = 0;
+                        }
+                    }
                 }
             }
         }
 
         Message::Right => {
-            if state.screen == Screen::Home {
-                if state.home_focus == HomeFocus::FilterBar {
-                    let opts = state.filter_options();
-                    if state.filter_index + 1 < opts.len() {
-                        state.filter_index += 1;
-                        state.repo_filter = opts[state.filter_index].clone();
-                        state.card_selected = 0;
+            match &state.screen {
+                Screen::Home => {
+                    if state.home_focus == HomeFocus::FilterBar {
+                        let opts = state.filter_options();
+                        if state.filter_index + 1 < opts.len() {
+                            state.filter_index += 1;
+                            state.repo_filter = opts[state.filter_index].clone();
+                            state.card_selected = 0;
+                        }
+                    } else if state.view_mode == ViewMode::Cards {
+                        let len = state.filtered_repos().len();
+                        if state.card_selected + 1 < len {
+                            state.card_selected += 1;
+                        }
                     }
-                } else if state.view_mode == ViewMode::Cards {
-                    let len = state.filtered_repos().len();
-                    if state.card_selected + 1 < len {
-                        state.card_selected += 1;
+                }
+                Screen::RepoDetail { .. } => {
+                    if state.detail_focus == DetailFocus::TabBar {
+                        if let Screen::RepoDetail { section, .. } = &mut state.screen {
+                            *section = section.next();
+                            state.detail_selected = 0;
+                        }
                     }
                 }
             }
@@ -547,6 +592,7 @@ pub fn update(state: &mut AppState, msg: Message) {
                                     section: RepoSection::PRs,
                                 };
                                 state.detail_selected = 0;
+                                state.detail_focus = DetailFocus::TabBar;
                                 state.repo_prs.clear();
                                 state.repo_issues.clear();
                                 state.repo_ci.clear();
@@ -560,6 +606,10 @@ pub fn update(state: &mut AppState, msg: Message) {
                         }
                     }
                     Screen::RepoDetail { .. } => {
+                        if state.detail_focus == DetailFocus::TabBar {
+                            state.detail_focus = DetailFocus::Content;
+                            return;
+                        }
                         // Open item in browser
                         let items = state.filtered_detail_items();
                         if let Some(item) = items.get(state.detail_selected) {
@@ -602,9 +652,12 @@ pub fn update(state: &mut AppState, msg: Message) {
         }
 
         Message::CycleSection => {
-            if let Screen::RepoDetail { section, .. } = &mut state.screen {
-                *section = section.next();
-                state.detail_selected = 0;
+            if let Screen::RepoDetail { .. } = &state.screen {
+                if state.detail_focus == DetailFocus::Content {
+                    state.detail_focus = DetailFocus::TabBar;
+                } else {
+                    state.detail_focus = DetailFocus::Content;
+                }
             }
         }
 
@@ -782,47 +835,75 @@ mod tests {
     }
 
     #[test]
-    fn test_cycle_section() {
+    fn test_tab_toggles_detail_focus() {
         let mut state = AppState::new();
         state.screen = Screen::RepoDetail {
             repo_full_name: "user/repo".to_string(),
             section: RepoSection::PRs,
         };
+        state.detail_focus = DetailFocus::TabBar;
 
+        // Tab from TabBar → Content
         update(&mut state, Message::CycleSection);
-        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Issues, .. }));
+        assert_eq!(state.detail_focus, DetailFocus::Content);
 
+        // Tab from Content → TabBar
         update(&mut state, Message::CycleSection);
-        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::CI, .. }));
-
-        update(&mut state, Message::CycleSection);
-        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Commits, .. }));
-
-        update(&mut state, Message::CycleSection);
-        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Info, .. }));
-
-        update(&mut state, Message::CycleSection);
-        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::PRs, .. }));
+        assert_eq!(state.detail_focus, DetailFocus::TabBar);
     }
 
     #[test]
-    fn test_cycle_section_five_way() {
+    fn test_left_right_navigates_sections() {
         let mut state = AppState::new();
         state.screen = Screen::RepoDetail {
             repo_full_name: "user/repo".to_string(),
             section: RepoSection::PRs,
         };
+        state.detail_focus = DetailFocus::TabBar;
 
-        update(&mut state, Message::CycleSection);
+        update(&mut state, Message::Right);
         assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Issues, .. }));
-        update(&mut state, Message::CycleSection);
+        update(&mut state, Message::Right);
         assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::CI, .. }));
-        update(&mut state, Message::CycleSection);
+        update(&mut state, Message::Right);
         assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Commits, .. }));
-        update(&mut state, Message::CycleSection);
+        update(&mut state, Message::Right);
         assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Info, .. }));
-        update(&mut state, Message::CycleSection);
+        update(&mut state, Message::Right);
         assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::PRs, .. }));
+
+        // Left goes backward
+        update(&mut state, Message::Left);
+        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Info, .. }));
+        update(&mut state, Message::Left);
+        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Commits, .. }));
+    }
+
+    #[test]
+    fn test_down_from_tabbar_enters_content() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "user/repo".to_string(),
+            section: RepoSection::PRs,
+        };
+        state.detail_focus = DetailFocus::TabBar;
+
+        update(&mut state, Message::Down);
+        assert_eq!(state.detail_focus, DetailFocus::Content);
+    }
+
+    #[test]
+    fn test_up_from_content_top_enters_tabbar() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "user/repo".to_string(),
+            section: RepoSection::PRs,
+        };
+        state.detail_focus = DetailFocus::Content;
+        state.detail_selected = 0;
+
+        update(&mut state, Message::Up);
+        assert_eq!(state.detail_focus, DetailFocus::TabBar);
     }
 
     #[test]

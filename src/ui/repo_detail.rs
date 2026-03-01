@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::{AppState, RepoSection};
+use crate::app::{AppState, DetailFocus, RepoSection};
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let (repo_full_name, section) = match &state.screen {
@@ -76,38 +76,38 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 
     // ── Section tabs ──
-    let pr_count = state.repo_prs.len();
-    let issue_count = state.repo_issues.len();
-    let ci_count = state.repo_ci.len();
-    let commit_count = state.repo_commits.len();
+    let focused = state.detail_focus == DetailFocus::TabBar;
+    let tabs: Vec<(RepoSection, String)> = vec![
+        (RepoSection::PRs, format!("PRs ({})", state.repo_prs.len())),
+        (RepoSection::Issues, format!("Issues ({})", state.repo_issues.len())),
+        (RepoSection::CI, format!("CI ({})", state.repo_ci.len())),
+        (RepoSection::Commits, format!("Commits ({})", state.repo_commits.len())),
+        (RepoSection::Info, "Info".to_string()),
+    ];
 
-    let tabs_line = Line::from(vec![
-        Span::raw("  "),
-        section_tab("PRs", pr_count, section == RepoSection::PRs),
-        Span::raw("    "),
-        section_tab("Issues", issue_count, section == RepoSection::Issues),
-        Span::raw("    "),
-        section_tab("CI", ci_count, section == RepoSection::CI),
-        Span::raw("    "),
-        section_tab("Commits", commit_count, section == RepoSection::Commits),
-        Span::raw("    "),
-        section_tab_no_count("Info", section == RepoSection::Info),
-    ]);
+    let mut tab_spans: Vec<Span> = vec![Span::raw("  ")];
+    let mut underline_spans: Vec<Span> = vec![Span::raw("  ")];
+    for (i, (sec, label)) in tabs.iter().enumerate() {
+        if i > 0 {
+            tab_spans.push(Span::raw("  "));
+            underline_spans.push(Span::raw("  "));
+        }
+        let active = section == *sec;
+        let width = label.len();
+        let style = if active && focused {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if active {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        tab_spans.push(Span::styled(label.clone(), style));
+        let bar: String = if active { "━".repeat(width) } else { "─".repeat(width) };
+        let bar_style = if active { Style::default().fg(Color::Cyan) } else { Style::default().fg(Color::DarkGray) };
+        underline_spans.push(Span::styled(bar, bar_style));
+    }
 
-    let underline = Line::from(vec![
-        Span::raw("  "),
-        section_underline(section == RepoSection::PRs),
-        Span::raw("    "),
-        section_underline(section == RepoSection::Issues),
-        Span::raw("    "),
-        section_underline(section == RepoSection::CI),
-        Span::raw("    "),
-        section_underline(section == RepoSection::Commits),
-        Span::raw("    "),
-        section_underline(section == RepoSection::Info),
-    ]);
-
-    frame.render_widget(Paragraph::new(vec![tabs_line, underline]), tabs_area);
+    frame.render_widget(Paragraph::new(vec![Line::from(tab_spans), Line::from(underline_spans)]), tabs_area);
 
     // ── Content ──
     if state.loading.contains("repo_detail") {
@@ -126,31 +126,6 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 }
 
-fn section_tab(label: &str, count: usize, active: bool) -> Span<'static> {
-    let text = format!("{} ({})", label, count);
-    if active {
-        Span::styled(text, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-    } else {
-        Span::styled(text, Style::default().fg(Color::DarkGray))
-    }
-}
-
-fn section_tab_no_count(label: &str, active: bool) -> Span<'static> {
-    let text = label.to_string();
-    if active {
-        Span::styled(text, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-    } else {
-        Span::styled(text, Style::default().fg(Color::DarkGray))
-    }
-}
-
-fn section_underline(active: bool) -> Span<'static> {
-    if active {
-        Span::styled("━━━━━━━", Style::default().fg(Color::Cyan))
-    } else {
-        Span::styled("───────", Style::default().fg(Color::DarkGray))
-    }
-}
 
 fn render_pr_list(frame: &mut Frame, area: Rect, state: &AppState) {
     let items = state.filtered_detail_items();
@@ -424,17 +399,10 @@ fn render_readme(frame: &mut Frame, area: Rect, state: &AppState) {
         // Code block toggle
         if raw_line.trim_start().starts_with("```") {
             in_code_block = !in_code_block;
-            if in_code_block {
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", raw_line),
-                    Style::default().fg(Color::DarkGray),
-                )));
-            } else {
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", raw_line),
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
+            lines.push(Line::from(Span::styled(
+                format!("  {}", raw_line),
+                Style::default().fg(Color::DarkGray),
+            )));
             continue;
         }
 
@@ -449,19 +417,19 @@ fn render_readme(frame: &mut Frame, area: Rect, state: &AppState) {
         let trimmed = raw_line.trim();
 
         // Headers
-        if trimmed.starts_with("### ") {
+        if let Some(h) = trimmed.strip_prefix("### ") {
             lines.push(Line::from(Span::styled(
-                format!("  {}", &trimmed[4..]),
+                format!("  {}", h),
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             )));
-        } else if trimmed.starts_with("## ") {
+        } else if let Some(h) = trimmed.strip_prefix("## ") {
             lines.push(Line::from(Span::styled(
-                format!("  {}", &trimmed[3..]),
+                format!("  {}", h),
                 Style::default().fg(Color::Cyan),
             )));
-        } else if trimmed.starts_with("# ") {
+        } else if let Some(h) = trimmed.strip_prefix("# ") {
             lines.push(Line::from(Span::styled(
-                format!("  {}", &trimmed[2..]),
+                format!("  {}", h),
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             )));
         }
@@ -530,7 +498,7 @@ fn parse_inline_markdown(text: &str) -> Line<'static> {
                     buf.clear();
                 }
                 let mut italic = String::new();
-                while let Some(c) = chars.next() {
+                for c in chars.by_ref() {
                     if c == '*' { break; }
                     italic.push(c);
                 }
@@ -542,14 +510,14 @@ fn parse_inline_markdown(text: &str) -> Line<'static> {
                     buf.clear();
                 }
                 let mut link_text = String::new();
-                while let Some(c) = chars.next() {
+                for c in chars.by_ref() {
                     if c == ']' { break; }
                     link_text.push(c);
                 }
                 // Skip the (url) part
                 if chars.peek() == Some(&'(') {
                     chars.next();
-                    while let Some(c) = chars.next() {
+                    for c in chars.by_ref() {
                         if c == ')' { break; }
                     }
                 }
