@@ -342,7 +342,10 @@ pub fn update(state: &mut AppState, msg: Message) {
         // ── Data loaded ──
 
         Message::ReposLoaded(repos) => {
-            state.repos = repos;
+            state.repos = repos.into_iter().filter(|r| {
+                !state.exclude_orgs.iter().any(|o| o.eq_ignore_ascii_case(&r.owner))
+                    && !state.exclude_repos.iter().any(|e| e.eq_ignore_ascii_case(&r.full_name))
+            }).collect();
             state.loading.remove("repos");
         }
         Message::ContributionsLoaded(data) => {
@@ -869,6 +872,26 @@ mod tests {
 
         state.repo_filter = RepoFilter::Org("acme-corp".to_string());
         assert_eq!(state.filtered_repos().len(), 1);
+    }
+
+    #[test]
+    fn test_config_exclusions() {
+        let mut state = AppState::new();
+        state.exclude_orgs = vec!["boring-corp".to_string()];
+        state.exclude_repos = vec!["alice/junk".to_string()];
+        state.loading.insert("repos".to_string());
+
+        let repos = vec![
+            make_repo("alice/good"),
+            make_repo("alice/junk"),
+            make_repo("boring-corp/tool"),
+            make_repo("acme/nice"),
+        ];
+        update(&mut state, Message::ReposLoaded(repos));
+
+        assert_eq!(state.repos.len(), 2);
+        assert_eq!(state.repos[0].full_name, "alice/good");
+        assert_eq!(state.repos[1].full_name, "acme/nice");
     }
 
     // ── Test helpers ──
