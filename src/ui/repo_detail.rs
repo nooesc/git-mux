@@ -79,6 +79,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let pr_count = state.repo_prs.len();
     let issue_count = state.repo_issues.len();
     let ci_count = state.repo_ci.len();
+    let commit_count = state.repo_commits.len();
 
     let tabs_line = Line::from(vec![
         Span::raw("  "),
@@ -87,6 +88,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         section_tab("Issues", issue_count, section == RepoSection::Issues),
         Span::raw("    "),
         section_tab("CI", ci_count, section == RepoSection::CI),
+        Span::raw("    "),
+        section_tab("Commits", commit_count, section == RepoSection::Commits),
+        Span::raw("    "),
+        section_tab_no_count("Info", section == RepoSection::Info),
     ]);
 
     let underline = Line::from(vec![
@@ -96,6 +101,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         section_underline(section == RepoSection::Issues),
         Span::raw("    "),
         section_underline(section == RepoSection::CI),
+        Span::raw("    "),
+        section_underline(section == RepoSection::Commits),
+        Span::raw("    "),
+        section_underline(section == RepoSection::Info),
     ]);
 
     frame.render_widget(Paragraph::new(vec![tabs_line, underline]), tabs_area);
@@ -112,17 +121,22 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         RepoSection::PRs => render_pr_list(frame, content_area, state),
         RepoSection::Issues => render_issue_list(frame, content_area, state),
         RepoSection::CI => render_ci_list(frame, content_area, state),
-        RepoSection::Commits | RepoSection::Info => {
-            // TODO: render commits tab and info tab (Tasks 5 & 6)
-            let p = Paragraph::new("  Coming soon...")
-                .style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(p, content_area);
-        }
+        RepoSection::Commits => render_commit_list(frame, content_area, state),
+        RepoSection::Info => render_readme(frame, content_area, state),
     }
 }
 
 fn section_tab(label: &str, count: usize, active: bool) -> Span<'static> {
     let text = format!("{} ({})", label, count);
+    if active {
+        Span::styled(text, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+    } else {
+        Span::styled(text, Style::default().fg(Color::DarkGray))
+    }
+}
+
+fn section_tab_no_count(label: &str, active: bool) -> Span<'static> {
+    let text = label.to_string();
     if active {
         Span::styled(text, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
     } else {
@@ -330,6 +344,76 @@ fn render_ci_list(frame: &mut Frame, area: Rect, state: &AppState) {
     let scroll = if selected_top + item_height > visible { selected_top + item_height - visible } else { 0 };
     let visible_lines: Vec<Line> = lines.into_iter().skip(scroll).take(visible).collect();
     frame.render_widget(Paragraph::new(visible_lines), area);
+}
+
+fn render_commit_list(frame: &mut Frame, area: Rect, state: &AppState) {
+    let items = state.filtered_detail_items();
+    if items.is_empty() {
+        frame.render_widget(
+            Paragraph::new("  No commits").style(Style::default().fg(Color::DarkGray)),
+            area,
+        );
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (idx, item) in items.iter().enumerate() {
+        if let crate::app::DetailItem::Commit(commit) = item {
+            let selected = idx == state.detail_selected;
+            let is_merge = commit.parents.len() > 1;
+
+            let style = if selected {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            let graph_char = if is_merge { "*  " } else { "* " };
+            let prefix = if selected { "  > " } else { "    " };
+
+            lines.push(Line::from(vec![
+                Span::raw(prefix),
+                Span::styled(graph_char, Style::default().fg(Color::Green)),
+                Span::styled(&commit.short_sha, Style::default().fg(Color::Yellow)),
+                Span::raw(" "),
+                Span::styled(&commit.message, style),
+            ]));
+
+            let age = {
+                let ago = Utc::now().signed_duration_since(commit.date);
+                if ago.num_hours() < 1 { format!("{}m ago", ago.num_minutes()) }
+                else if ago.num_hours() < 24 { format!("{}h ago", ago.num_hours()) }
+                else { format!("{}d ago", ago.num_days()) }
+            };
+
+            lines.push(Line::from(vec![
+                Span::raw(if is_merge { "       |\\  " } else { "       |  " }),
+                Span::styled(&commit.author, Style::default().fg(Color::Magenta)),
+                Span::raw("  "),
+                Span::styled(age, Style::default().fg(Color::DarkGray)),
+            ]));
+            lines.push(Line::from(""));
+        }
+    }
+
+    // Scroll
+    let item_height = 3;
+    let selected_top = state.detail_selected * item_height;
+    let visible = area.height as usize;
+    let scroll = if selected_top + item_height > visible { selected_top + item_height - visible } else { 0 };
+    let visible_lines: Vec<Line> = lines.into_iter().skip(scroll).take(visible).collect();
+    frame.render_widget(Paragraph::new(visible_lines), area);
+}
+
+fn render_readme(frame: &mut Frame, area: Rect, state: &AppState) {
+    let text = match &state.repo_readme {
+        Some(content) => content.as_str(),
+        None => "  No README available",
+    };
+    frame.render_widget(
+        Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
+        area,
+    );
 }
 
 fn render_repo_heatmap(
