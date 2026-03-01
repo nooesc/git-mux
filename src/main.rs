@@ -175,7 +175,13 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                         }
                         None
                     }
-                    KeyCode::Char('r') if state.active_view != View::CI => Some(Message::ForceRefresh),
+                    KeyCode::Char('r') if state.active_view != View::CI => {
+                        if !state.loading.contains(&state.active_view) {
+                            state.loading.insert(state.active_view);
+                            spawn_refresh(state.active_view, &rt, &bg_tx, &state);
+                        }
+                        Some(Message::ForceRefresh)
+                    }
                     KeyCode::Char('m') if state.active_view == View::Notifications => {
                         if let Some(notif) = state.notifications.get(state.notif_selected) {
                             let thread_id = notif.id.clone();
@@ -201,13 +207,37 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                 };
 
                 if let Some(msg) = msg {
+                    let is_switch = matches!(msg, Message::SwitchView(_));
                     update(&mut state, msg);
+
+                    // After switching views, check if the new view is stale
+                    if is_switch {
+                        let stale = state.last_refresh.get(&state.active_view)
+                            .map(|t| t.elapsed().as_secs() > config.general.refresh_interval_secs)
+                            .unwrap_or(true);
+
+                        if stale && !state.loading.contains(&state.active_view) {
+                            state.loading.insert(state.active_view);
+                            spawn_refresh(state.active_view, &rt, &bg_tx, &state);
+                        }
+                    }
+
                     if let Some(url) = state.pending_open_url.take() {
                         let _ = open::that(&url);
                     }
                 }
             }
             AppEvent::Tick => {
+                // Check if active view needs refresh
+                let stale = state.last_refresh.get(&state.active_view)
+                    .map(|t| t.elapsed().as_secs() > config.general.refresh_interval_secs)
+                    .unwrap_or(true);
+
+                if stale && !state.loading.contains(&state.active_view) {
+                    state.loading.insert(state.active_view);
+                    spawn_refresh(state.active_view, &rt, &bg_tx, &state);
+                }
+
                 update(&mut state, Message::Tick);
                 if let Some(url) = state.pending_open_url.take() {
                     let _ = open::that(&url);
@@ -221,6 +251,73 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn spawn_refresh(
+    view: View,
+    rt: &tokio::runtime::Runtime,
+    tx: &std::sync::mpsc::Sender<Message>,
+    state: &AppState,
+) {
+    let tx = tx.clone();
+    match view {
+        View::Repos => {
+            rt.spawn(async move {
+                match crate::github::GitHubClient::new().await {
+                    Ok(client) => match client.fetch_all_repos().await {
+                        Ok(repos) => { let _ = tx.send(Message::ReposLoaded(repos)); }
+                        Err(e) => { let _ = tx.send(Message::Error(format!("Repos: {}", e))); }
+                    },
+                    Err(e) => { let _ = tx.send(Message::Error(format!("Auth: {}", e))); }
+                }
+            });
+        }
+        View::PRs => {
+            rt.spawn(async move {
+                match crate::github::GitHubClient::new().await {
+                    Ok(client) => match client.fetch_prs().await {
+                        Ok(prs) => { let _ = tx.send(Message::PrsLoaded(prs)); }
+                        Err(e) => { let _ = tx.send(Message::Error(format!("PRs: {}", e))); }
+                    },
+                    Err(e) => { let _ = tx.send(Message::Error(format!("Auth: {}", e))); }
+                }
+            });
+        }
+        View::Graph => {
+            rt.spawn(async move {
+                match crate::github::GitHubClient::new().await {
+                    Ok(client) => match client.fetch_contributions().await {
+                        Ok(data) => { let _ = tx.send(Message::ContributionsLoaded(data)); }
+                        Err(e) => { let _ = tx.send(Message::Error(format!("Contributions: {}", e))); }
+                    },
+                    Err(e) => { let _ = tx.send(Message::Error(format!("Auth: {}", e))); }
+                }
+            });
+        }
+        View::Notifications => {
+            rt.spawn(async move {
+                match crate::github::GitHubClient::new().await {
+                    Ok(client) => match client.fetch_notifications().await {
+                        Ok(notifs) => { let _ = tx.send(Message::NotificationsLoaded(notifs)); }
+                        Err(e) => { let _ = tx.send(Message::Error(format!("Notifications: {}", e))); }
+                    },
+                    Err(e) => { let _ = tx.send(Message::Error(format!("Auth: {}", e))); }
+                }
+            });
+        }
+        View::CI => {
+            let repos = state.repos.clone();
+            rt.spawn(async move {
+                match crate::github::GitHubClient::new().await {
+                    Ok(client) => match client.fetch_ci_runs(&repos).await {
+                        Ok(runs) => { let _ = tx.send(Message::CiRunsLoaded(runs)); }
+                        Err(e) => { let _ = tx.send(Message::Error(format!("CI: {}", e))); }
+                    },
+                    Err(e) => { let _ = tx.send(Message::Error(format!("Auth: {}", e))); }
+                }
+            });
+        }
+    }
 }
 
 fn render(frame: &mut Frame, state: &AppState) {
