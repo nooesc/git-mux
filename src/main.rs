@@ -1,3 +1,4 @@
+mod app;
 mod github;
 
 use anyhow::Result;
