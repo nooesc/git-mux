@@ -1,130 +1,146 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::Instant;
+
+use image::DynamicImage;
 
 use crate::github::ci::WorkflowRun;
 use crate::github::contributions::ContributionData;
-use crate::github::notifications::Notification as GhNotification;
-use crate::github::prs::PrState;
+use crate::github::issues::IssueInfo;
+use crate::github::notifications::Notification;
+use crate::github::prs::PrInfo;
 use crate::github::repos::RepoInfo;
+use crate::github::UserInfo;
 
-// ── View enum ──
+// ── Screen hierarchy ──
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum View {
-    Repos,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Screen {
+    Home,
+    RepoDetail {
+        repo_full_name: String,
+        section: RepoSection,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoSection {
     PRs,
-    Graph,
-    Notifications,
+    Issues,
     CI,
 }
 
-impl View {
-    pub const ALL: [View; 5] = [
-        View::Repos,
-        View::PRs,
-        View::Graph,
-        View::Notifications,
-        View::CI,
-    ];
-
-    pub fn label(&self) -> &'static str {
+impl RepoSection {
+    pub fn next(self) -> Self {
         match self {
-            View::Repos => "Repos",
-            View::PRs => "PRs",
-            View::Graph => "Graph",
-            View::Notifications => "Notifs",
-            View::CI => "CI",
+            Self::PRs => Self::Issues,
+            Self::Issues => Self::CI,
+            Self::CI => Self::PRs,
         }
     }
 
-    pub fn index(&self) -> usize {
+    pub fn label(self) -> &'static str {
         match self {
-            View::Repos => 0,
-            View::PRs => 1,
-            View::Graph => 2,
-            View::Notifications => 3,
-            View::CI => 4,
+            Self::PRs => "PRs",
+            Self::Issues => "Issues",
+            Self::CI => "CI",
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrSection {
-    Authored,
-    ReviewRequested,
+pub enum ViewMode {
+    Cards,
+    List,
 }
 
 // ── App State ──
 
 pub struct AppState {
-    pub active_view: View,
+    // Navigation
+    pub screen: Screen,
     pub should_quit: bool,
 
-    // Loading & error state
-    pub loading: HashSet<View>,
-    pub last_refresh: HashMap<View, Instant>,
-    pub error: Option<String>,
-
-    // Repo state
+    // Home screen data
     pub repos: Vec<RepoInfo>,
-    pub repo_selected: usize,
-
-    // PR state
-    pub prs: PrState,
-    pub pr_selected: usize,
-    pub pr_section: PrSection,
-
-    // Contribution graph
     pub contributions: ContributionData,
+    pub avatar: Option<DynamicImage>,
+    pub user_info: Option<UserInfo>,
 
-    // Notifications
-    pub notifications: Vec<GhNotification>,
+    // Home screen UI state
+    pub card_selected: usize,
+    pub view_mode: ViewMode,
+    pub home_scroll: u16,
+
+    // Repo detail data (lazy-loaded when entering a repo)
+    pub repo_prs: Vec<PrInfo>,
+    pub repo_issues: Vec<IssueInfo>,
+    pub repo_ci: Vec<WorkflowRun>,
+    pub detail_selected: usize,
+
+    // Notifications (global, shown as overlay)
+    pub notifications: Vec<Notification>,
     pub notif_selected: usize,
+    pub show_notifications: bool,
 
-    // CI
-    pub ci_runs: Vec<WorkflowRun>,
-    pub ci_selected: usize,
+    // Loading state (string keys: "repos", "contributions", "avatar", "notifications", "repo_detail")
+    pub loading: HashSet<String>,
+
+    // Error
+    pub error: Option<String>,
+    pub error_at: Option<Instant>,
+
+    // UI overlays
+    pub show_help: bool,
+    pub search_mode: bool,
+    pub search_query: String,
 
     // Open-in-browser
     pub pending_open_url: Option<String>,
 
-    // Help overlay
-    pub show_help: bool,
-
-    // Error timing for auto-dismiss
-    pub error_at: Option<Instant>,
-
-    // Search
-    pub search_mode: bool,
-    pub search_query: String,
+    // Terminal dimensions (updated on resize)
+    pub term_width: u16,
+    pub term_height: u16,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self {
-            active_view: View::Repos,
+            screen: Screen::Home,
             should_quit: false,
-            loading: HashSet::new(),
-            last_refresh: HashMap::new(),
-            error: None,
             repos: Vec::new(),
-            repo_selected: 0,
-            prs: PrState::default(),
-            pr_selected: 0,
-            pr_section: PrSection::Authored,
             contributions: ContributionData::default(),
+            avatar: None,
+            user_info: None,
+            card_selected: 0,
+            view_mode: ViewMode::Cards,
+            home_scroll: 0,
+            repo_prs: Vec::new(),
+            repo_issues: Vec::new(),
+            repo_ci: Vec::new(),
+            detail_selected: 0,
             notifications: Vec::new(),
             notif_selected: 0,
-            ci_runs: Vec::new(),
-            ci_selected: 0,
-            pending_open_url: None,
-            show_help: false,
+            show_notifications: false,
+            loading: HashSet::new(),
+            error: None,
             error_at: None,
+            show_help: false,
             search_mode: false,
             search_query: String::new(),
+            pending_open_url: None,
+            term_width: 120,
+            term_height: 40,
         }
     }
 
+    /// Number of card columns based on terminal width.
+    pub fn num_card_cols(&self) -> usize {
+        if self.term_width >= 120 { 3 }
+        else if self.term_width >= 80 { 2 }
+        else { 1 }
+    }
+
+    /// Get repos filtered by search query.
     pub fn filtered_repos(&self) -> Vec<&RepoInfo> {
         if self.search_query.is_empty() {
             return self.repos.iter().collect();
@@ -132,27 +148,46 @@ impl AppState {
         let q = self.search_query.to_lowercase();
         self.repos.iter().filter(|r| {
             r.full_name.to_lowercase().contains(&q)
-                || r.description.as_ref().map(|d| d.to_lowercase().contains(&q)).unwrap_or(false)
+                || r.description.as_ref().is_some_and(|d| d.to_lowercase().contains(&q))
+                || r.language.as_ref().is_some_and(|l| l.to_lowercase().contains(&q))
         }).collect()
     }
 
-    pub fn filtered_prs(&self) -> Vec<&crate::github::prs::PrInfo> {
-        let list = match self.pr_section {
-            PrSection::Authored => &self.prs.authored,
-            PrSection::ReviewRequested => &self.prs.review_requested,
+    /// Get the currently selected repo (if any), accounting for search filter.
+    pub fn selected_repo(&self) -> Option<&RepoInfo> {
+        self.filtered_repos().get(self.card_selected).copied()
+    }
+
+    /// Get repo detail items filtered by search query.
+    pub fn filtered_detail_items(&self) -> Vec<DetailItem> {
+        let items: Vec<DetailItem> = match &self.screen {
+            Screen::RepoDetail { section: RepoSection::PRs, .. } => {
+                self.repo_prs.iter().map(|pr| DetailItem::Pr(pr)).collect()
+            }
+            Screen::RepoDetail { section: RepoSection::Issues, .. } => {
+                self.repo_issues.iter().map(|i| DetailItem::Issue(i)).collect()
+            }
+            Screen::RepoDetail { section: RepoSection::CI, .. } => {
+                self.repo_ci.iter().map(|r| DetailItem::Ci(r)).collect()
+            }
+            _ => Vec::new(),
         };
+
         if self.search_query.is_empty() {
-            return list.iter().collect();
+            return items;
         }
         let q = self.search_query.to_lowercase();
-        list.iter().filter(|pr| {
-            pr.title.to_lowercase().contains(&q)
-                || pr.repo_full_name.to_lowercase().contains(&q)
-                || pr.user.to_lowercase().contains(&q)
+        items.into_iter().filter(|item| {
+            match item {
+                DetailItem::Pr(pr) => pr.title.to_lowercase().contains(&q) || pr.user.to_lowercase().contains(&q),
+                DetailItem::Issue(i) => i.title.to_lowercase().contains(&q) || i.user.to_lowercase().contains(&q),
+                DetailItem::Ci(r) => r.name.to_lowercase().contains(&q) || r.head_branch.to_lowercase().contains(&q),
+            }
         }).collect()
     }
 
-    pub fn filtered_notifications(&self) -> Vec<&GhNotification> {
+    /// Filtered notifications.
+    pub fn filtered_notifications(&self) -> Vec<&Notification> {
         if self.search_query.is_empty() {
             return self.notifications.iter().collect();
         }
@@ -163,46 +198,74 @@ impl AppState {
         }).collect()
     }
 
-    pub fn filtered_ci_runs(&self) -> Vec<&crate::github::ci::WorkflowRun> {
-        if self.search_query.is_empty() {
-            return self.ci_runs.iter().collect();
-        }
-        let q = self.search_query.to_lowercase();
-        self.ci_runs.iter().filter(|r| {
-            r.name.to_lowercase().contains(&q)
-                || r.repo_full_name.to_lowercase().contains(&q)
-                || r.head_branch.to_lowercase().contains(&q)
-        }).collect()
+    /// Count of unread notifications.
+    pub fn unread_count(&self) -> usize {
+        self.notifications.iter().filter(|n| n.unread).count()
     }
+
+    /// Breadcrumb path for header bar.
+    pub fn breadcrumb(&self) -> String {
+        match &self.screen {
+            Screen::Home => "Home".to_string(),
+            Screen::RepoDetail { repo_full_name, section } => {
+                format!("Home > {} > {}", repo_full_name, section.label())
+            }
+        }
+    }
+}
+
+/// Wrapper for detail view items to allow mixed lists.
+pub enum DetailItem<'a> {
+    Pr(&'a PrInfo),
+    Issue(&'a IssueInfo),
+    Ci(&'a WorkflowRun),
 }
 
 // ── Messages ──
 
 #[derive(Debug)]
 pub enum Message {
-    SwitchView(View),
+    // Navigation
     Quit,
     Up,
     Down,
+    Left,
+    Right,
     Select,
     Back,
-    Tick,
-    ForceRefresh,
-    Error(String),
-    #[allow(dead_code)]
-    DismissError,
+    GoHome,
+    CycleSection,
+    ToggleViewMode,
+
+    // Data loaded
     ReposLoaded(Vec<RepoInfo>),
-    PrsLoaded(PrState),
     ContributionsLoaded(ContributionData),
-    NotificationsLoaded(Vec<GhNotification>),
-    CiRunsLoaded(Vec<WorkflowRun>),
+    AvatarLoaded(Vec<u8>),
+    UserInfoLoaded(UserInfo),
+    NotificationsLoaded(Vec<Notification>),
+    RepoDetailLoaded {
+        repo: String,
+        prs: Vec<PrInfo>,
+        issues: Vec<IssueInfo>,
+        ci: Vec<WorkflowRun>,
+    },
+
+    // Actions
+    ToggleNotifications,
     MarkNotifRead(String),
-    TogglePrSection,
+    MarkAllNotifsRead,
+    ForceRefresh,
+
+    // UI
+    Tick,
+    Error(String),
+    DismissError,
     ToggleHelp,
     EnterSearch,
     ExitSearch,
     SearchInput(char),
     SearchBackspace,
+    Resize(u16, u16),
 }
 
 // ── Update ──
@@ -210,7 +273,7 @@ pub enum Message {
 pub fn update(state: &mut AppState, msg: Message) {
     match msg {
         Message::Quit => state.should_quit = true,
-        Message::SwitchView(view) => state.active_view = view,
+
         Message::Error(e) => {
             state.error = Some(e);
             state.error_at = Some(Instant::now());
@@ -219,147 +282,267 @@ pub fn update(state: &mut AppState, msg: Message) {
             state.error = None;
             state.error_at = None;
         }
+
+        Message::Resize(w, h) => {
+            state.term_width = w;
+            state.term_height = h;
+        }
+
+        // ── Data loaded ──
+
         Message::ReposLoaded(repos) => {
             state.repos = repos;
-            state.loading.remove(&View::Repos);
-            state.last_refresh.insert(View::Repos, Instant::now());
-        }
-        Message::PrsLoaded(prs) => {
-            state.prs = prs;
-            state.loading.remove(&View::PRs);
-            state.last_refresh.insert(View::PRs, Instant::now());
+            state.loading.remove("repos");
         }
         Message::ContributionsLoaded(data) => {
             state.contributions = data;
-            state.loading.remove(&View::Graph);
-            state.last_refresh.insert(View::Graph, Instant::now());
+            state.loading.remove("contributions");
+        }
+        Message::AvatarLoaded(bytes) => {
+            state.avatar = image::load_from_memory(&bytes).ok();
+            state.loading.remove("avatar");
+        }
+        Message::UserInfoLoaded(info) => {
+            state.user_info = Some(info);
         }
         Message::NotificationsLoaded(notifs) => {
             state.notifications = notifs;
-            state.loading.remove(&View::Notifications);
-            state.last_refresh.insert(View::Notifications, Instant::now());
+            state.loading.remove("notifications");
         }
-        Message::CiRunsLoaded(runs) => {
-            state.ci_runs = runs;
-            state.loading.remove(&View::CI);
-            state.last_refresh.insert(View::CI, Instant::now());
+        Message::RepoDetailLoaded { repo, prs, issues, ci } => {
+            // Only apply if we're still on the same repo
+            if let Screen::RepoDetail { repo_full_name, .. } = &state.screen {
+                if *repo_full_name == repo {
+                    state.repo_prs = prs;
+                    state.repo_issues = issues;
+                    state.repo_ci = ci;
+                    state.loading.remove("repo_detail");
+                }
+            }
         }
+
+        // ── Navigation ──
+
+        Message::Up => {
+            if state.show_notifications {
+                if state.notif_selected > 0 {
+                    state.notif_selected -= 1;
+                }
+            } else {
+                match &state.screen {
+                    Screen::Home => {
+                        let cols = state.num_card_cols();
+                        match state.view_mode {
+                            ViewMode::Cards => {
+                                if state.card_selected >= cols {
+                                    state.card_selected -= cols;
+                                }
+                            }
+                            ViewMode::List => {
+                                if state.card_selected > 0 {
+                                    state.card_selected -= 1;
+                                }
+                            }
+                        }
+                    }
+                    Screen::RepoDetail { .. } => {
+                        if state.detail_selected > 0 {
+                            state.detail_selected -= 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        Message::Down => {
+            if state.show_notifications {
+                let len = state.filtered_notifications().len();
+                if state.notif_selected < len.saturating_sub(1) {
+                    state.notif_selected += 1;
+                }
+            } else {
+                match &state.screen {
+                    Screen::Home => {
+                        let cols = state.num_card_cols();
+                        let len = state.filtered_repos().len();
+                        match state.view_mode {
+                            ViewMode::Cards => {
+                                if state.card_selected + cols < len {
+                                    state.card_selected += cols;
+                                }
+                            }
+                            ViewMode::List => {
+                                if state.card_selected < len.saturating_sub(1) {
+                                    state.card_selected += 1;
+                                }
+                            }
+                        }
+                    }
+                    Screen::RepoDetail { .. } => {
+                        let len = state.filtered_detail_items().len();
+                        if state.detail_selected < len.saturating_sub(1) {
+                            state.detail_selected += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        Message::Left => {
+            if state.screen == Screen::Home && state.view_mode == ViewMode::Cards && state.card_selected > 0 {
+                state.card_selected -= 1;
+            }
+        }
+
+        Message::Right => {
+            if state.screen == Screen::Home && state.view_mode == ViewMode::Cards {
+                let len = state.filtered_repos().len();
+                if state.card_selected + 1 < len {
+                    state.card_selected += 1;
+                }
+            }
+        }
+
+        Message::Select => {
+            if state.show_notifications {
+                // Open notification URL in browser
+                let filtered = state.filtered_notifications();
+                if let Some(notif) = filtered.get(state.notif_selected) {
+                    if let Some(ref url) = notif.url {
+                        state.pending_open_url = Some(url.clone());
+                    }
+                }
+            } else {
+                match &state.screen {
+                    Screen::Home => {
+                        // Drill into repo detail
+                        let filtered = state.filtered_repos();
+                        if let Some(repo) = filtered.get(state.card_selected) {
+                            let repo_full_name = repo.full_name.clone();
+                            state.screen = Screen::RepoDetail {
+                                repo_full_name,
+                                section: RepoSection::PRs,
+                            };
+                            state.detail_selected = 0;
+                            state.repo_prs.clear();
+                            state.repo_issues.clear();
+                            state.repo_ci.clear();
+                            state.loading.insert("repo_detail".to_string());
+                            state.search_query.clear();
+                            state.search_mode = false;
+                        }
+                    }
+                    Screen::RepoDetail { .. } => {
+                        // Open item in browser
+                        let items = state.filtered_detail_items();
+                        if let Some(item) = items.get(state.detail_selected) {
+                            let url = match item {
+                                DetailItem::Pr(pr) => &pr.html_url,
+                                DetailItem::Issue(i) => &i.html_url,
+                                DetailItem::Ci(r) => &r.html_url,
+                            };
+                            state.pending_open_url = Some(url.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        Message::Back => {
+            if state.show_notifications {
+                state.show_notifications = false;
+            } else if state.search_mode {
+                state.search_mode = false;
+                state.search_query.clear();
+            } else {
+                match &state.screen {
+                    Screen::RepoDetail { .. } => {
+                        state.screen = Screen::Home;
+                        state.detail_selected = 0;
+                        state.search_query.clear();
+                    }
+                    Screen::Home => {} // already at root
+                }
+            }
+        }
+
+        Message::GoHome => {
+            state.screen = Screen::Home;
+            state.show_notifications = false;
+            state.search_mode = false;
+            state.search_query.clear();
+        }
+
+        Message::CycleSection => {
+            if let Screen::RepoDetail { section, .. } = &mut state.screen {
+                *section = section.next();
+                state.detail_selected = 0;
+            }
+        }
+
+        Message::ToggleViewMode => {
+            if state.screen == Screen::Home {
+                state.view_mode = match state.view_mode {
+                    ViewMode::Cards => ViewMode::List,
+                    ViewMode::List => ViewMode::Cards,
+                };
+            }
+        }
+
+        // ── Actions ──
+
+        Message::ToggleNotifications => {
+            state.show_notifications = !state.show_notifications;
+            if state.show_notifications {
+                state.notif_selected = 0;
+            }
+        }
+
         Message::MarkNotifRead(thread_id) => {
-            // Mark the notification as read locally
             if let Some(notif) = state.notifications.iter_mut().find(|n| n.id == thread_id) {
                 notif.unread = false;
             }
         }
-        Message::TogglePrSection => {
-            state.pr_section = match state.pr_section {
-                PrSection::Authored => PrSection::ReviewRequested,
-                PrSection::ReviewRequested => PrSection::Authored,
-            };
-            state.pr_selected = 0;
-        }
-        Message::Up => {
-            match state.active_view {
-                View::Repos => {
-                    if state.repo_selected > 0 {
-                        state.repo_selected -= 1;
-                    }
-                }
-                View::PRs => {
-                    if state.pr_selected > 0 {
-                        state.pr_selected -= 1;
-                    }
-                }
-                View::Notifications => {
-                    if state.notif_selected > 0 {
-                        state.notif_selected -= 1;
-                    }
-                }
-                View::CI => {
-                    if state.ci_selected > 0 {
-                        state.ci_selected -= 1;
-                    }
-                }
-                _ => {}
+
+        Message::MarkAllNotifsRead => {
+            for notif in &mut state.notifications {
+                notif.unread = false;
             }
         }
-        Message::Down => {
-            match state.active_view {
-                View::Repos => {
-                    if state.repo_selected < state.repos.len().saturating_sub(1) {
-                        state.repo_selected += 1;
-                    }
-                }
-                View::PRs => {
-                    let len = match state.pr_section {
-                        PrSection::Authored => state.prs.authored.len(),
-                        PrSection::ReviewRequested => state.prs.review_requested.len(),
-                    };
-                    if state.pr_selected < len.saturating_sub(1) {
-                        state.pr_selected += 1;
-                    }
-                }
-                View::Notifications => {
-                    if state.notif_selected < state.notifications.len().saturating_sub(1) {
-                        state.notif_selected += 1;
-                    }
-                }
-                View::CI => {
-                    if state.ci_selected < state.ci_runs.len().saturating_sub(1) {
-                        state.ci_selected += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-        Message::Select => {
-            match state.active_view {
-                View::Repos => {
-                    if let Some(repo) = state.repos.get(state.repo_selected) {
-                        state.pending_open_url = Some(repo.html_url.clone());
-                    }
-                }
-                View::PRs => {
-                    let pr = match state.pr_section {
-                        PrSection::Authored => state.prs.authored.get(state.pr_selected),
-                        PrSection::ReviewRequested => state.prs.review_requested.get(state.pr_selected),
-                    };
-                    if let Some(pr) = pr {
-                        state.pending_open_url = Some(pr.html_url.clone());
-                    }
-                }
-                View::Notifications => {
-                    if let Some(notif) = state.notifications.get(state.notif_selected)
-                        && let Some(ref url) = notif.url
-                    {
-                        state.pending_open_url = Some(url.clone());
-                    }
-                }
-                View::CI => {
-                    if let Some(run) = state.ci_runs.get(state.ci_selected) {
-                        state.pending_open_url = Some(run.html_url.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
+
+        // ── UI ──
+
         Message::ToggleHelp => state.show_help = !state.show_help,
         Message::EnterSearch => state.search_mode = true,
         Message::ExitSearch => {
             state.search_mode = false;
             state.search_query.clear();
         }
-        Message::SearchInput(c) => state.search_query.push(c),
-        Message::SearchBackspace => { state.search_query.pop(); }
+        Message::SearchInput(c) => {
+            state.search_query.push(c);
+            // Reset selection when search changes
+            state.card_selected = 0;
+            state.detail_selected = 0;
+            state.notif_selected = 0;
+        }
+        Message::SearchBackspace => {
+            state.search_query.pop();
+            state.card_selected = 0;
+            state.detail_selected = 0;
+            state.notif_selected = 0;
+        }
+
         Message::Tick => {
             // Auto-dismiss error after 10 seconds
-            if let Some(at) = state.error_at
-                && at.elapsed().as_secs() > 10
-            {
-                state.error = None;
-                state.error_at = None;
+            if let Some(at) = state.error_at {
+                if at.elapsed().as_secs() > 10 {
+                    state.error = None;
+                    state.error_at = None;
+                }
             }
         }
-        Message::Back | Message::ForceRefresh => {}
+
+        Message::ForceRefresh => {}
     }
 }
 
@@ -370,24 +553,16 @@ mod tests {
     #[test]
     fn test_initial_state() {
         let state = AppState::new();
-        assert_eq!(state.active_view, View::Repos);
+        assert_eq!(state.screen, Screen::Home);
         assert!(!state.should_quit);
         assert!(state.error.is_none());
-        assert!(state.loading.is_empty());
     }
 
     #[test]
-    fn test_quit_message() {
+    fn test_quit() {
         let mut state = AppState::new();
         update(&mut state, Message::Quit);
         assert!(state.should_quit);
-    }
-
-    #[test]
-    fn test_switch_view() {
-        let mut state = AppState::new();
-        update(&mut state, Message::SwitchView(View::PRs));
-        assert_eq!(state.active_view, View::PRs);
     }
 
     #[test]
@@ -400,150 +575,228 @@ mod tests {
     }
 
     #[test]
-    fn test_view_labels() {
-        assert_eq!(View::Repos.label(), "Repos");
-        assert_eq!(View::PRs.label(), "PRs");
-        assert_eq!(View::CI.label(), "CI");
+    fn test_repos_loaded() {
+        let mut state = AppState::new();
+        state.loading.insert("repos".to_string());
+
+        let repos = vec![make_repo("user/test")];
+        update(&mut state, Message::ReposLoaded(repos));
+        assert_eq!(state.repos.len(), 1);
+        assert!(!state.loading.contains("repos"));
     }
 
     #[test]
-    fn test_view_indices() {
-        for (i, view) in View::ALL.iter().enumerate() {
-            assert_eq!(view.index(), i);
+    fn test_card_navigation_list_mode() {
+        let mut state = AppState::new();
+        state.view_mode = ViewMode::List;
+        state.repos = vec![make_repo("a"), make_repo("b"), make_repo("c")];
+
+        update(&mut state, Message::Down);
+        assert_eq!(state.card_selected, 1);
+        update(&mut state, Message::Down);
+        assert_eq!(state.card_selected, 2);
+        update(&mut state, Message::Down);
+        assert_eq!(state.card_selected, 2); // can't pass end
+        update(&mut state, Message::Up);
+        assert_eq!(state.card_selected, 1);
+    }
+
+    #[test]
+    fn test_card_navigation_grid_mode() {
+        let mut state = AppState::new();
+        state.view_mode = ViewMode::Cards;
+        state.term_width = 120; // 3 columns
+        state.repos = vec![
+            make_repo("a"), make_repo("b"), make_repo("c"),
+            make_repo("d"), make_repo("e"), make_repo("f"),
+        ];
+
+        // Down jumps by 3 (one row)
+        update(&mut state, Message::Down);
+        assert_eq!(state.card_selected, 3);
+
+        // Right moves by 1
+        update(&mut state, Message::Right);
+        assert_eq!(state.card_selected, 4);
+
+        // Up jumps back by 3
+        update(&mut state, Message::Up);
+        assert_eq!(state.card_selected, 1);
+
+        // Left moves by 1
+        update(&mut state, Message::Left);
+        assert_eq!(state.card_selected, 0);
+    }
+
+    #[test]
+    fn test_drill_into_repo() {
+        let mut state = AppState::new();
+        state.repos = vec![make_repo("user/myrepo")];
+
+        update(&mut state, Message::Select);
+        assert_eq!(state.screen, Screen::RepoDetail {
+            repo_full_name: "user/myrepo".to_string(),
+            section: RepoSection::PRs,
+        });
+        assert!(state.loading.contains("repo_detail"));
+    }
+
+    #[test]
+    fn test_back_from_repo_detail() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "user/repo".to_string(),
+            section: RepoSection::PRs,
+        };
+
+        update(&mut state, Message::Back);
+        assert_eq!(state.screen, Screen::Home);
+    }
+
+    #[test]
+    fn test_cycle_section() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "user/repo".to_string(),
+            section: RepoSection::PRs,
+        };
+
+        update(&mut state, Message::CycleSection);
+        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Issues, .. }));
+
+        update(&mut state, Message::CycleSection);
+        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::CI, .. }));
+
+        update(&mut state, Message::CycleSection);
+        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::PRs, .. }));
+    }
+
+    #[test]
+    fn test_toggle_view_mode() {
+        let mut state = AppState::new();
+        assert_eq!(state.view_mode, ViewMode::Cards);
+        update(&mut state, Message::ToggleViewMode);
+        assert_eq!(state.view_mode, ViewMode::List);
+        update(&mut state, Message::ToggleViewMode);
+        assert_eq!(state.view_mode, ViewMode::Cards);
+    }
+
+    #[test]
+    fn test_notification_overlay() {
+        let mut state = AppState::new();
+        assert!(!state.show_notifications);
+        update(&mut state, Message::ToggleNotifications);
+        assert!(state.show_notifications);
+        update(&mut state, Message::Back);
+        assert!(!state.show_notifications);
+    }
+
+    #[test]
+    fn test_mark_notif_read() {
+        let mut state = AppState::new();
+        state.notifications = vec![make_notification("1", true), make_notification("2", true)];
+
+        update(&mut state, Message::MarkNotifRead("1".to_string()));
+        assert!(!state.notifications[0].unread);
+        assert!(state.notifications[1].unread);
+    }
+
+    #[test]
+    fn test_mark_all_notifs_read() {
+        let mut state = AppState::new();
+        state.notifications = vec![make_notification("1", true), make_notification("2", true)];
+
+        update(&mut state, Message::MarkAllNotifsRead);
+        assert!(!state.notifications[0].unread);
+        assert!(!state.notifications[1].unread);
+    }
+
+    #[test]
+    fn test_go_home() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "x/y".to_string(),
+            section: RepoSection::CI,
+        };
+        state.show_notifications = true;
+        state.search_mode = true;
+
+        update(&mut state, Message::GoHome);
+        assert_eq!(state.screen, Screen::Home);
+        assert!(!state.show_notifications);
+        assert!(!state.search_mode);
+    }
+
+    #[test]
+    fn test_search_resets_selection() {
+        let mut state = AppState::new();
+        state.card_selected = 5;
+        update(&mut state, Message::SearchInput('a'));
+        assert_eq!(state.card_selected, 0);
+        assert_eq!(state.search_query, "a");
+    }
+
+    #[test]
+    fn test_breadcrumb() {
+        let mut state = AppState::new();
+        assert_eq!(state.breadcrumb(), "Home");
+
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "nooesc/ghd".to_string(),
+            section: RepoSection::PRs,
+        };
+        assert_eq!(state.breadcrumb(), "Home > nooesc/ghd > PRs");
+    }
+
+    #[test]
+    fn test_unread_count() {
+        let mut state = AppState::new();
+        state.notifications = vec![
+            make_notification("1", true),
+            make_notification("2", false),
+            make_notification("3", true),
+        ];
+        assert_eq!(state.unread_count(), 2);
+    }
+
+    #[test]
+    fn test_resize() {
+        let mut state = AppState::new();
+        update(&mut state, Message::Resize(80, 24));
+        assert_eq!(state.term_width, 80);
+        assert_eq!(state.term_height, 24);
+        assert_eq!(state.num_card_cols(), 2);
+    }
+
+    // ── Test helpers ──
+
+    fn make_repo(name: &str) -> RepoInfo {
+        let owner = name.split('/').next().unwrap_or("").to_string();
+        RepoInfo {
+            full_name: name.to_string(),
+            description: None,
+            language: None,
+            stargazers_count: 0,
+            forks_count: 0,
+            open_issues_count: 0,
+            pushed_at: None,
+            html_url: format!("https://github.com/{}", name),
+            is_fork: false,
+            is_private: false,
+            owner,
         }
     }
 
-    #[test]
-    fn test_repos_loaded() {
-        let mut state = AppState::new();
-        state.loading.insert(View::Repos);
-
-        let repos = vec![RepoInfo {
-            full_name: "user/test".to_string(),
-            description: None,
-            language: Some("Rust".to_string()),
-            stargazers_count: 5,
-            forks_count: 1,
-            open_issues_count: 2,
-            pushed_at: None,
-            html_url: "https://github.com/user/test".to_string(),
-            is_fork: false,
-            is_private: false,
-            owner: "user".to_string(),
-        }];
-
-        update(&mut state, Message::ReposLoaded(repos));
-        assert_eq!(state.repos.len(), 1);
-        assert!(!state.loading.contains(&View::Repos));
-    }
-
-    #[test]
-    fn test_repo_navigation() {
-        let mut state = AppState::new();
-        state.repos = vec![
-            RepoInfo {
-                full_name: "a".to_string(), description: None, language: None,
-                stargazers_count: 0, forks_count: 0, open_issues_count: 0,
-                pushed_at: None, html_url: String::new(), is_fork: false,
-                is_private: false, owner: String::new(),
-            },
-            RepoInfo {
-                full_name: "b".to_string(), description: None, language: None,
-                stargazers_count: 0, forks_count: 0, open_issues_count: 0,
-                pushed_at: None, html_url: String::new(), is_fork: false,
-                is_private: false, owner: String::new(),
-            },
-        ];
-
-        update(&mut state, Message::Down);
-        assert_eq!(state.repo_selected, 1);
-        update(&mut state, Message::Down);
-        assert_eq!(state.repo_selected, 1); // can't go past end
-        update(&mut state, Message::Up);
-        assert_eq!(state.repo_selected, 0);
-        update(&mut state, Message::Up);
-        assert_eq!(state.repo_selected, 0); // can't go below 0
-    }
-
-    fn make_notification(id: &str, title: &str, unread: bool) -> GhNotification {
-        GhNotification {
+    fn make_notification(id: &str, unread: bool) -> Notification {
+        Notification {
             id: id.to_string(),
             reason: "subscribed".to_string(),
-            subject_title: title.to_string(),
+            subject_title: "Test".to_string(),
             subject_type: "PullRequest".to_string(),
             repo_full_name: "user/repo".to_string(),
             updated_at: None,
             unread,
             url: Some("https://github.com/user/repo/pull/1".to_string()),
         }
-    }
-
-    #[test]
-    fn test_notifications_loaded() {
-        let mut state = AppState::new();
-        state.loading.insert(View::Notifications);
-
-        let notifs = vec![
-            make_notification("1", "Fix bug", true),
-            make_notification("2", "Add feature", false),
-        ];
-
-        update(&mut state, Message::NotificationsLoaded(notifs));
-        assert_eq!(state.notifications.len(), 2);
-        assert!(!state.loading.contains(&View::Notifications));
-    }
-
-    #[test]
-    fn test_notification_navigation() {
-        let mut state = AppState::new();
-        state.active_view = View::Notifications;
-        state.notifications = vec![
-            make_notification("1", "First", true),
-            make_notification("2", "Second", true),
-            make_notification("3", "Third", false),
-        ];
-
-        assert_eq!(state.notif_selected, 0);
-        update(&mut state, Message::Down);
-        assert_eq!(state.notif_selected, 1);
-        update(&mut state, Message::Down);
-        assert_eq!(state.notif_selected, 2);
-        update(&mut state, Message::Down);
-        assert_eq!(state.notif_selected, 2); // can't go past end
-        update(&mut state, Message::Up);
-        assert_eq!(state.notif_selected, 1);
-        update(&mut state, Message::Up);
-        assert_eq!(state.notif_selected, 0);
-        update(&mut state, Message::Up);
-        assert_eq!(state.notif_selected, 0); // can't go below 0
-    }
-
-    #[test]
-    fn test_notification_select_opens_url() {
-        let mut state = AppState::new();
-        state.active_view = View::Notifications;
-        state.notifications = vec![
-            make_notification("1", "Fix bug", true),
-        ];
-
-        update(&mut state, Message::Select);
-        assert_eq!(
-            state.pending_open_url.as_deref(),
-            Some("https://github.com/user/repo/pull/1")
-        );
-    }
-
-    #[test]
-    fn test_mark_notification_read() {
-        let mut state = AppState::new();
-        state.notifications = vec![
-            make_notification("1", "Fix bug", true),
-            make_notification("2", "Add feature", true),
-        ];
-
-        assert!(state.notifications[0].unread);
-        update(&mut state, Message::MarkNotifRead("1".to_string()));
-        assert!(!state.notifications[0].unread);
-        assert!(state.notifications[1].unread); // other notification unchanged
     }
 }
