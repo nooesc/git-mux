@@ -1,10 +1,12 @@
 pub mod auth;
 pub mod avatar;
 pub mod ci;
+pub mod commits;
 pub mod contributions;
 pub mod issues;
 pub mod notifications;
 pub mod prs;
+pub mod readme;
 pub mod repos;
 
 use anyhow::Result;
