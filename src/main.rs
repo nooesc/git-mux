@@ -63,6 +63,23 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
         state.loading.insert(app::View::PRs);
     }
 
+    // Spawn contributions fetch
+    {
+        let tx = bg_tx.clone();
+        rt.spawn(async move {
+            match crate::github::GitHubClient::new().await {
+                Ok(client) => {
+                    match client.fetch_contributions().await {
+                        Ok(data) => { let _ = tx.send(Message::ContributionsLoaded(data)); }
+                        Err(e) => { let _ = tx.send(Message::Error(format!("Failed to fetch contributions: {}", e))); }
+                    }
+                }
+                Err(e) => { let _ = tx.send(Message::Error(format!("Auth failed: {}", e))); }
+            }
+        });
+        state.loading.insert(app::View::Graph);
+    }
+
     loop {
         // Drain background messages
         while let Ok(msg) = bg_rx.try_recv() {

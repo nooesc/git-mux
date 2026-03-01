@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use crate::github::contributions::ContributionData;
 use crate::github::prs::PrState;
 use crate::github::repos::RepoInfo;
 
@@ -71,6 +72,9 @@ pub struct AppState {
     pub pr_selected: usize,
     pub pr_section: PrSection,
 
+    // Contribution graph
+    pub contributions: ContributionData,
+
     // Open-in-browser
     pub pending_open_url: Option<String>,
 }
@@ -88,6 +92,7 @@ impl AppState {
             prs: PrState::default(),
             pr_selected: 0,
             pr_section: PrSection::Authored,
+            contributions: ContributionData::default(),
             pending_open_url: None,
         }
     }
@@ -109,6 +114,7 @@ pub enum Message {
     DismissError,
     ReposLoaded(Vec<RepoInfo>),
     PrsLoaded(PrState),
+    ContributionsLoaded(ContributionData),
     TogglePrSection,
 }
 
@@ -129,6 +135,11 @@ pub fn update(state: &mut AppState, msg: Message) {
             state.prs = prs;
             state.loading.remove(&View::PRs);
             state.last_refresh.insert(View::PRs, Instant::now());
+        }
+        Message::ContributionsLoaded(data) => {
+            state.contributions = data;
+            state.loading.remove(&View::Graph);
+            state.last_refresh.insert(View::Graph, Instant::now());
         }
         Message::TogglePrSection => {
             state.pr_section = match state.pr_section {
