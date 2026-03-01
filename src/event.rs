@@ -8,6 +8,7 @@ use std::time::Duration;
 pub enum AppEvent {
     Key(KeyEvent),
     Tick,
+    Resize(u16, u16),
 }
 
 pub struct EventHandler {
@@ -21,11 +22,18 @@ impl EventHandler {
         thread::spawn(move || {
             loop {
                 if event::poll(tick_rate).unwrap_or(false) {
-                    if let Ok(CrosstermEvent::Key(key)) = event::read()
-                        && key.kind == KeyEventKind::Press
-                        && tx.send(AppEvent::Key(key)).is_err()
-                    {
-                        return;
+                    match event::read() {
+                        Ok(CrosstermEvent::Key(key)) if key.kind == KeyEventKind::Press => {
+                            if tx.send(AppEvent::Key(key)).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(CrosstermEvent::Resize(w, h)) => {
+                            if tx.send(AppEvent::Resize(w, h)).is_err() {
+                                return;
+                            }
+                        }
+                        _ => {}
                     }
                 } else if tx.send(AppEvent::Tick).is_err() {
                     return;

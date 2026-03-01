@@ -1,19 +1,16 @@
-pub mod ci;
-pub mod contributions;
-pub mod notifications;
-pub mod prs;
-pub mod repos;
+pub mod header;
+pub mod home;
+pub mod notification_overlay;
+pub mod repo_detail;
 
-use ratatui::Frame;
 use ratatui::layout::Rect;
-use crate::app::{AppState, View};
+use ratatui::Frame;
+
+use crate::app::{AppState, Screen};
 
 pub fn render_content(frame: &mut Frame, area: Rect, state: &AppState) {
-    match state.active_view {
-        View::Repos => repos::render(frame, area, state),
-        View::PRs => prs::render(frame, area, state),
-        View::Graph => contributions::render(frame, area, state),
-        View::Notifications => notifications::render(frame, area, state),
-        View::CI => ci::render(frame, area, state),
+    match &state.screen {
+        Screen::Home => home::render(frame, area, state),
+        Screen::RepoDetail { .. } => repo_detail::render(frame, area, state),
     }
 }
