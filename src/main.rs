@@ -136,7 +136,7 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                 let thread_id = notif.id.clone();
                                 let tid = thread_id.clone();
                                 rt.spawn(async move {
-                                    if let Ok(client) = crate::github::GitHubClient::new().await {
+                                    if let Ok(client) = crate::github::GitHubClient::from_token() {
                                         let _ = client.mark_notification_read(&tid).await;
                                     }
                                 });
@@ -151,7 +151,7 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                 .map(|n| n.id.clone())
                                 .collect();
                             rt.spawn(async move {
-                                if let Ok(client) = crate::github::GitHubClient::new().await {
+                                if let Ok(client) = crate::github::GitHubClient::from_token() {
                                     for id in ids {
                                         let _ = client.mark_notification_read(&id).await;
                                     }
@@ -182,7 +182,7 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                         let parts: Vec<&str> = repo_name.splitn(2, '/').collect();
                                         if parts.len() == 2 {
                                             let (owner, name) = (parts[0], parts[1]);
-                                            if let Ok(client) = crate::github::GitHubClient::new().await {
+                                            if let Ok(client) = crate::github::GitHubClient::from_token() {
                                                 let (prs, issues, ci) = tokio::join!(
                                                     client.fetch_repo_prs(owner, name),
                                                     client.fetch_repo_issues(owner, name),
@@ -229,7 +229,7 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                             let run_id = run.id;
                                             let tx = bg_tx.clone();
                                             rt.spawn(async move {
-                                                if let Ok(client) = crate::github::GitHubClient::new().await
+                                                if let Ok(client) = crate::github::GitHubClient::from_token()
                                                     && let Err(e) = client.rerun_workflow(&owner, &repo, run_id).await {
                                                     let _ = tx.send(Message::Error(format!("Re-run failed: {}", e)));
                                                 }
@@ -243,7 +243,7 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                         state.loading.insert("repos".to_string());
                                         let tx = bg_tx.clone();
                                         rt.spawn(async move {
-                                            if let Ok(client) = crate::github::GitHubClient::new().await
+                                            if let Ok(client) = crate::github::GitHubClient::from_token()
                                                 && let Ok(repos) = client.fetch_all_repos().await {
                                                 let _ = tx.send(Message::ReposLoaded(repos));
                                             }

@@ -34,7 +34,7 @@ impl GitHubClient {
                 issues.push(parse_issue(item));
             }
 
-            if done { break; }
+            if done || page >= 5 { break; }
             page += 1;
         }
         Ok(issues)

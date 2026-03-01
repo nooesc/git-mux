@@ -144,7 +144,7 @@ impl GitHubClient {
                 });
             }
 
-            if done { break; }
+            if done || page >= 5 { break; }
             page += 1;
         }
         Ok(prs)

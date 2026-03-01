@@ -47,4 +47,24 @@ impl GitHubClient {
 
         Ok(Arc::new(Self { octocrab, username, user_info }))
     }
+
+    /// Create a lightweight client that skips the /user API call.
+    /// Use this for action handlers where user info is already known.
+    pub fn from_token() -> Result<Arc<Self>> {
+        let token = auth::get_token()?;
+        let octocrab = Octocrab::builder()
+            .personal_token(token)
+            .build()?;
+
+        Ok(Arc::new(Self {
+            octocrab,
+            username: String::new(),
+            user_info: UserInfo {
+                login: String::new(),
+                avatar_url: String::new(),
+                public_repos: 0,
+                followers: 0,
+            },
+        }))
+    }
 }

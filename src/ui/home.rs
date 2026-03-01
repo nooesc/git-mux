@@ -271,7 +271,8 @@ fn render_card(frame: &mut Frame, area: Rect, repo: &RepoInfo, selected: bool) {
     let desc = repo.description.as_deref().unwrap_or("");
     let max_desc = (inner.width as usize).saturating_sub(2);
     let desc_truncated = if desc.len() > max_desc {
-        format!("{}…", &desc[..max_desc.saturating_sub(1)])
+        let end = desc.floor_char_boundary(max_desc.saturating_sub(1));
+        format!("{}…", &desc[..end])
     } else {
         desc.to_string()
     };
