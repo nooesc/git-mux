@@ -53,6 +53,20 @@ pub enum ViewMode {
     List,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeFocus {
+    FilterBar,
+    Repos,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepoFilter {
+    All,
+    Public,
+    Private,
+    Org(String),
+}
+
 // ── App State ──
 
 pub struct AppState {
@@ -70,6 +84,13 @@ pub struct AppState {
     pub card_selected: usize,
     pub view_mode: ViewMode,
     pub home_scroll: u16,
+    pub home_focus: HomeFocus,
+    pub repo_filter: RepoFilter,
+    pub filter_index: usize,
+
+    // Config (for exclusions)
+    pub exclude_orgs: Vec<String>,
+    pub exclude_repos: Vec<String>,
 
     // Repo detail data (lazy-loaded when entering a repo)
     pub repo_prs: Vec<PrInfo>,
@@ -114,6 +135,11 @@ impl AppState {
             card_selected: 0,
             view_mode: ViewMode::Cards,
             home_scroll: 0,
+            home_focus: HomeFocus::Repos,
+            repo_filter: RepoFilter::All,
+            filter_index: 0,
+            exclude_orgs: Vec::new(),
+            exclude_repos: Vec::new(),
             repo_prs: Vec::new(),
             repo_issues: Vec::new(),
             repo_ci: Vec::new(),
@@ -140,13 +166,38 @@ impl AppState {
         else { 1 }
     }
 
-    /// Get repos filtered by search query.
+    /// Build the list of filter options from loaded repos.
+    pub fn filter_options(&self) -> Vec<RepoFilter> {
+        let mut opts = vec![RepoFilter::All, RepoFilter::Public, RepoFilter::Private];
+        let username = self.user_info.as_ref().map(|u| u.login.as_str()).unwrap_or("");
+        let mut orgs: Vec<&str> = self.repos.iter()
+            .map(|r| r.owner.as_str())
+            .filter(|o| !o.is_empty() && *o != username)
+            .collect();
+        orgs.sort_unstable();
+        orgs.dedup();
+        for org in orgs {
+            opts.push(RepoFilter::Org(org.to_string()));
+        }
+        opts
+    }
+
+    /// Get repos filtered by search query and repo filter.
     pub fn filtered_repos(&self) -> Vec<&RepoInfo> {
+        let filter_iter = self.repos.iter().filter(|r| {
+            match &self.repo_filter {
+                RepoFilter::All => true,
+                RepoFilter::Public => !r.is_private,
+                RepoFilter::Private => r.is_private,
+                RepoFilter::Org(name) => r.owner == *name,
+            }
+        });
+
         if self.search_query.is_empty() {
-            return self.repos.iter().collect();
+            return filter_iter.collect();
         }
         let q = self.search_query.to_lowercase();
-        self.repos.iter().filter(|r| {
+        filter_iter.filter(|r| {
             r.full_name.to_lowercase().contains(&q)
                 || r.description.as_ref().is_some_and(|d| d.to_lowercase().contains(&q))
                 || r.language.as_ref().is_some_and(|l| l.to_lowercase().contains(&q))
@@ -768,7 +819,65 @@ mod tests {
         assert_eq!(state.num_card_cols(), 2);
     }
 
+    #[test]
+    fn test_initial_home_focus() {
+        let state = AppState::new();
+        assert_eq!(state.home_focus, HomeFocus::Repos);
+        assert_eq!(state.repo_filter, RepoFilter::All);
+        assert_eq!(state.filter_index, 0);
+    }
+
+    #[test]
+    fn test_filter_options_generation() {
+        let mut state = AppState::new();
+        state.repos = vec![
+            make_repo("alice/foo"),
+            make_repo_private("alice/secret"),
+            make_repo("acme-corp/tool"),
+        ];
+        state.user_info = Some(crate::github::UserInfo {
+            login: "alice".to_string(),
+            avatar_url: String::new(),
+            public_repos: 2,
+            followers: 0,
+        });
+        let opts = state.filter_options();
+        assert_eq!(opts.len(), 4);
+        assert_eq!(opts[0], RepoFilter::All);
+        assert_eq!(opts[1], RepoFilter::Public);
+        assert_eq!(opts[2], RepoFilter::Private);
+        assert_eq!(opts[3], RepoFilter::Org("acme-corp".to_string()));
+    }
+
+    #[test]
+    fn test_filtered_repos_by_filter() {
+        let mut state = AppState::new();
+        state.repos = vec![
+            make_repo("alice/public1"),
+            make_repo_private("alice/secret"),
+            make_repo("acme-corp/tool"),
+        ];
+
+        state.repo_filter = RepoFilter::All;
+        assert_eq!(state.filtered_repos().len(), 3);
+
+        state.repo_filter = RepoFilter::Public;
+        assert_eq!(state.filtered_repos().len(), 2);
+
+        state.repo_filter = RepoFilter::Private;
+        assert_eq!(state.filtered_repos().len(), 1);
+
+        state.repo_filter = RepoFilter::Org("acme-corp".to_string());
+        assert_eq!(state.filtered_repos().len(), 1);
+    }
+
     // ── Test helpers ──
+
+    fn make_repo_private(name: &str) -> RepoInfo {
+        let mut repo = make_repo(name);
+        repo.is_private = true;
+        repo
+    }
 
     fn make_repo(name: &str) -> RepoInfo {
         let owner = name.split('/').next().unwrap_or("").to_string();
