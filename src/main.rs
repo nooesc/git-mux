@@ -23,9 +23,11 @@ fn main() -> Result<()> {
 }
 
 fn run(terminal: &mut DefaultTerminal) -> Result<()> {
-    let _config = config::Config::load()?;
+    let config = config::Config::load()?;
 
     let mut state = AppState::new();
+    state.exclude_orgs = config.orgs.exclude.clone();
+    state.exclude_repos = config.repos.exclude.clone();
 
     // Get initial terminal size
     let size = terminal.size()?;
@@ -175,6 +177,7 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
 
                         KeyCode::Enter => {
                             if state.screen == Screen::Home
+                                && state.home_focus == app::HomeFocus::Repos
                                 && let Some(repo) = state.selected_repo() {
                                     let repo_name = repo.full_name.clone();
                                     let tx = bg_tx.clone();
