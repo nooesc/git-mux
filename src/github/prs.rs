@@ -99,4 +99,45 @@ impl GitHubClient {
         ).await?;
         Ok(())
     }
+
+    /// Fetch all PRs for a specific repo (open + closed, most recent first).
+    pub async fn fetch_repo_prs(&self, owner: &str, repo: &str) -> Result<Vec<PrInfo>> {
+        let mut prs = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let batch: Vec<serde_json::Value> = self.octocrab.get(
+                format!("/repos/{}/{}/pulls", owner, repo),
+                Some(&[
+                    ("per_page", "100"),
+                    ("page", &page.to_string()),
+                    ("state", "all"),
+                    ("sort", "updated"),
+                    ("direction", "desc"),
+                ]),
+            ).await?;
+
+            if batch.is_empty() { break; }
+            let done = batch.len() < 100;
+
+            for item in &batch {
+                prs.push(PrInfo {
+                    number: item["number"].as_u64().unwrap_or(0),
+                    title: item["title"].as_str().unwrap_or("").to_string(),
+                    repo_full_name: format!("{}/{}", owner, repo),
+                    state: item["state"].as_str().unwrap_or("open").to_string(),
+                    html_url: item["html_url"].as_str().unwrap_or("").to_string(),
+                    created_at: item["created_at"].as_str().and_then(|s| s.parse().ok()),
+                    updated_at: item["updated_at"].as_str().and_then(|s| s.parse().ok()),
+                    draft: item["draft"].as_bool().unwrap_or(false),
+                    user: item["user"]["login"].as_str().unwrap_or("").to_string(),
+                    head_ref: item["head"]["ref"].as_str().unwrap_or("").to_string(),
+                    base_ref: item["base"]["ref"].as_str().unwrap_or("").to_string(),
+                });
+            }
+
+            if done { break; }
+            page += 1;
+        }
+        Ok(prs)
+    }
 }
