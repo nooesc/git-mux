@@ -6,9 +6,13 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use crate::app::AppState;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
-    if state.repos.is_empty() {
+    let filtered = state.filtered_repos();
+
+    if filtered.is_empty() {
         let loading = if state.loading.contains(&crate::app::View::Repos) {
             "Loading repos..."
+        } else if !state.search_query.is_empty() {
+            "No matching repos"
         } else {
             "No repos found"
         };
@@ -25,9 +29,8 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     ])
     .areas(area);
 
-    // Left panel: repo list
-    let items: Vec<ListItem> = state
-        .repos
+    // Left panel: repo list (filtered)
+    let items: Vec<ListItem> = filtered
         .iter()
         .enumerate()
         .map(|(i, repo)| {
@@ -51,12 +54,18 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         })
         .collect();
 
+    let title = if state.search_query.is_empty() {
+        " Repos ".to_string()
+    } else {
+        format!(" Repos ({} matches) ", filtered.len())
+    };
+
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Repos "));
+        .block(Block::default().borders(Borders::ALL).title(title));
     frame.render_widget(list, list_area);
 
     // Right panel: selected repo details
-    if let Some(repo) = state.repos.get(state.repo_selected) {
+    if let Some(repo) = filtered.get(state.repo_selected) {
         let pushed_ago = repo
             .pushed_at
             .map(|dt| {
