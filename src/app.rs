@@ -58,6 +58,9 @@ pub struct AppState {
     // Repo state
     pub repos: Vec<RepoInfo>,
     pub repo_selected: usize,
+
+    // Open-in-browser
+    pub pending_open_url: Option<String>,
 }
 
 impl AppState {
@@ -70,6 +73,7 @@ impl AppState {
             error: None,
             repos: Vec::new(),
             repo_selected: 0,
+            pending_open_url: None,
         }
     }
 }
@@ -124,7 +128,17 @@ pub fn update(state: &mut AppState, msg: Message) {
                 _ => {}
             }
         }
-        Message::Select | Message::Back | Message::Tick | Message::ForceRefresh => {}
+        Message::Select => {
+            match state.active_view {
+                View::Repos => {
+                    if let Some(repo) = state.repos.get(state.repo_selected) {
+                        state.pending_open_url = Some(repo.html_url.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        Message::Back | Message::Tick | Message::ForceRefresh => {}
     }
 }
 

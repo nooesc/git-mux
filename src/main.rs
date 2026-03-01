@@ -1,12 +1,13 @@
 mod app;
 mod event;
 mod github;
+mod ui;
 
 use anyhow::Result;
 use app::{AppState, Message, View, update};
 use crossterm::event::KeyCode;
 use event::{AppEvent, EventHandler};
-use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Tabs};
@@ -84,10 +85,16 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
 
                 if let Some(msg) = msg {
                     update(&mut state, msg);
+                    if let Some(url) = state.pending_open_url.take() {
+                        let _ = open::that(&url);
+                    }
                 }
             }
             AppEvent::Tick => {
                 update(&mut state, Message::Tick);
+                if let Some(url) = state.pending_open_url.take() {
+                    let _ = open::that(&url);
+                }
             }
         }
 
@@ -125,20 +132,8 @@ fn render(frame: &mut Frame, state: &AppState) {
 
     frame.render_widget(tabs, tab_area);
 
-    // Content area — placeholder per view
-    let content_text = match state.active_view {
-        View::Repos => "Repo browser (coming soon)",
-        View::PRs => "PR dashboard (coming soon)",
-        View::Graph => "Contribution graph (coming soon)",
-        View::Notifications => "Notifications (coming soon)",
-        View::CI => "CI status (coming soon)",
-    };
-
-    let content = Paragraph::new(content_text)
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
-
-    frame.render_widget(content, content_area);
+    // Content area
+    ui::render_content(frame, content_area, state);
 
     // Status bar
     let status = if let Some(ref err) = state.error {
