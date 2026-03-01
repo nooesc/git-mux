@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod prs;
 pub mod repos;
 
 use anyhow::Result;
