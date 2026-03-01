@@ -1,4 +1,5 @@
 pub mod contributions;
+pub mod notifications;
 pub mod prs;
 pub mod repos;
 
@@ -11,6 +12,7 @@ pub fn render_content(frame: &mut Frame, area: Rect, state: &AppState) {
         View::Repos => repos::render(frame, area, state),
         View::PRs => prs::render(frame, area, state),
         View::Graph => contributions::render(frame, area, state),
+        View::Notifications => notifications::render(frame, area, state),
         _ => {
             let placeholder = ratatui::widgets::Paragraph::new(
                 format!("{} (coming soon)", state.active_view.label())

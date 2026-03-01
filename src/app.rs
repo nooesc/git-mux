@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use crate::github::contributions::ContributionData;
+use crate::github::notifications::Notification as GhNotification;
 use crate::github::prs::PrState;
 use crate::github::repos::RepoInfo;
 
@@ -75,6 +76,10 @@ pub struct AppState {
     // Contribution graph
     pub contributions: ContributionData,
 
+    // Notifications
+    pub notifications: Vec<GhNotification>,
+    pub notif_selected: usize,
+
     // Open-in-browser
     pub pending_open_url: Option<String>,
 }
@@ -93,6 +98,8 @@ impl AppState {
             pr_selected: 0,
             pr_section: PrSection::Authored,
             contributions: ContributionData::default(),
+            notifications: Vec::new(),
+            notif_selected: 0,
             pending_open_url: None,
         }
     }
@@ -115,6 +122,8 @@ pub enum Message {
     ReposLoaded(Vec<RepoInfo>),
     PrsLoaded(PrState),
     ContributionsLoaded(ContributionData),
+    NotificationsLoaded(Vec<GhNotification>),
+    MarkNotifRead(String),
     TogglePrSection,
 }
 
@@ -141,6 +150,17 @@ pub fn update(state: &mut AppState, msg: Message) {
             state.loading.remove(&View::Graph);
             state.last_refresh.insert(View::Graph, Instant::now());
         }
+        Message::NotificationsLoaded(notifs) => {
+            state.notifications = notifs;
+            state.loading.remove(&View::Notifications);
+            state.last_refresh.insert(View::Notifications, Instant::now());
+        }
+        Message::MarkNotifRead(thread_id) => {
+            // Mark the notification as read locally
+            if let Some(notif) = state.notifications.iter_mut().find(|n| n.id == thread_id) {
+                notif.unread = false;
+            }
+        }
         Message::TogglePrSection => {
             state.pr_section = match state.pr_section {
                 PrSection::Authored => PrSection::ReviewRequested,
@@ -158,6 +178,11 @@ pub fn update(state: &mut AppState, msg: Message) {
                 View::PRs => {
                     if state.pr_selected > 0 {
                         state.pr_selected -= 1;
+                    }
+                }
+                View::Notifications => {
+                    if state.notif_selected > 0 {
+                        state.notif_selected -= 1;
                     }
                 }
                 _ => {}
@@ -179,6 +204,11 @@ pub fn update(state: &mut AppState, msg: Message) {
                         state.pr_selected += 1;
                     }
                 }
+                View::Notifications => {
+                    if state.notif_selected < state.notifications.len().saturating_sub(1) {
+                        state.notif_selected += 1;
+                    }
+                }
                 _ => {}
             }
         }
@@ -196,6 +226,13 @@ pub fn update(state: &mut AppState, msg: Message) {
                     };
                     if let Some(pr) = pr {
                         state.pending_open_url = Some(pr.html_url.clone());
+                    }
+                }
+                View::Notifications => {
+                    if let Some(notif) = state.notifications.get(state.notif_selected) {
+                        if let Some(ref url) = notif.url {
+                            state.pending_open_url = Some(url.clone());
+                        }
                     }
                 }
                 _ => {}
@@ -305,5 +342,87 @@ mod tests {
         assert_eq!(state.repo_selected, 0);
         update(&mut state, Message::Up);
         assert_eq!(state.repo_selected, 0); // can't go below 0
+    }
+
+    fn make_notification(id: &str, title: &str, unread: bool) -> GhNotification {
+        GhNotification {
+            id: id.to_string(),
+            reason: "subscribed".to_string(),
+            subject_title: title.to_string(),
+            subject_type: "PullRequest".to_string(),
+            repo_full_name: "user/repo".to_string(),
+            updated_at: None,
+            unread,
+            url: Some("https://github.com/user/repo/pull/1".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_notifications_loaded() {
+        let mut state = AppState::new();
+        state.loading.insert(View::Notifications);
+
+        let notifs = vec![
+            make_notification("1", "Fix bug", true),
+            make_notification("2", "Add feature", false),
+        ];
+
+        update(&mut state, Message::NotificationsLoaded(notifs));
+        assert_eq!(state.notifications.len(), 2);
+        assert!(!state.loading.contains(&View::Notifications));
+    }
+
+    #[test]
+    fn test_notification_navigation() {
+        let mut state = AppState::new();
+        state.active_view = View::Notifications;
+        state.notifications = vec![
+            make_notification("1", "First", true),
+            make_notification("2", "Second", true),
+            make_notification("3", "Third", false),
+        ];
+
+        assert_eq!(state.notif_selected, 0);
+        update(&mut state, Message::Down);
+        assert_eq!(state.notif_selected, 1);
+        update(&mut state, Message::Down);
+        assert_eq!(state.notif_selected, 2);
+        update(&mut state, Message::Down);
+        assert_eq!(state.notif_selected, 2); // can't go past end
+        update(&mut state, Message::Up);
+        assert_eq!(state.notif_selected, 1);
+        update(&mut state, Message::Up);
+        assert_eq!(state.notif_selected, 0);
+        update(&mut state, Message::Up);
+        assert_eq!(state.notif_selected, 0); // can't go below 0
+    }
+
+    #[test]
+    fn test_notification_select_opens_url() {
+        let mut state = AppState::new();
+        state.active_view = View::Notifications;
+        state.notifications = vec![
+            make_notification("1", "Fix bug", true),
+        ];
+
+        update(&mut state, Message::Select);
+        assert_eq!(
+            state.pending_open_url.as_deref(),
+            Some("https://github.com/user/repo/pull/1")
+        );
+    }
+
+    #[test]
+    fn test_mark_notification_read() {
+        let mut state = AppState::new();
+        state.notifications = vec![
+            make_notification("1", "Fix bug", true),
+            make_notification("2", "Add feature", true),
+        ];
+
+        assert!(state.notifications[0].unread);
+        update(&mut state, Message::MarkNotifRead("1".to_string()));
+        assert!(!state.notifications[0].unread);
+        assert!(state.notifications[1].unread); // other notification unchanged
     }
 }

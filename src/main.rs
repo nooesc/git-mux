@@ -80,6 +80,23 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
         state.loading.insert(app::View::Graph);
     }
 
+    // Spawn notifications fetch
+    {
+        let tx = bg_tx.clone();
+        rt.spawn(async move {
+            match crate::github::GitHubClient::new().await {
+                Ok(client) => {
+                    match client.fetch_notifications().await {
+                        Ok(notifs) => { let _ = tx.send(Message::NotificationsLoaded(notifs)); }
+                        Err(e) => { let _ = tx.send(Message::Error(format!("Failed to fetch notifications: {}", e))); }
+                    }
+                }
+                Err(e) => { let _ = tx.send(Message::Error(format!("Auth failed: {}", e))); }
+            }
+        });
+        state.loading.insert(app::View::Notifications);
+    }
+
     loop {
         // Drain background messages
         while let Ok(msg) = bg_rx.try_recv() {
@@ -118,6 +135,27 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                     KeyCode::Char('k') | KeyCode::Up => Some(Message::Up),
                     KeyCode::Enter => Some(Message::Select),
                     KeyCode::Esc => Some(Message::Back),
+                    KeyCode::Char('m') if state.active_view == View::Notifications => {
+                        if let Some(notif) = state.notifications.get(state.notif_selected) {
+                            let thread_id = notif.id.clone();
+                            // Spawn background task to mark as read via API
+                            let tx = bg_tx.clone();
+                            let tid = thread_id.clone();
+                            rt.spawn(async move {
+                                match crate::github::GitHubClient::new().await {
+                                    Ok(client) => {
+                                        if let Err(e) = client.mark_notification_read(&tid).await {
+                                            let _ = tx.send(Message::Error(format!("Failed to mark read: {}", e)));
+                                        }
+                                    }
+                                    Err(e) => { let _ = tx.send(Message::Error(format!("Auth failed: {}", e))); }
+                                }
+                            });
+                            Some(Message::MarkNotifRead(thread_id))
+                        } else {
+                            None
+                        }
+                    }
                     _ => None,
                 };
 
