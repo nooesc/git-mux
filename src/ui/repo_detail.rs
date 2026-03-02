@@ -2,7 +2,7 @@ use chrono::Utc;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{AppState, DetailFocus, RepoSection};
@@ -13,23 +13,30 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         _ => return,
     };
 
-    let has_activity = !state.repo_commit_activity.is_empty();
-    let heatmap_height = if has_activity { 6 } else { 0 };
-
-    let [header_area, heatmap_area, tabs_area, content_area] = Layout::vertical([
-        Constraint::Length(4),
-        Constraint::Length(heatmap_height),
+    let [top_row1, top_row2, tabs_area, content_area] = Layout::vertical([
+        Constraint::Length(5),
+        Constraint::Length(5),
         Constraint::Length(2),
         Constraint::Fill(1),
     ]).areas(area);
 
-    // ── Repo header ──
+    let [repo_box_area, health_box_area] = Layout::horizontal([
+        Constraint::Percentage(55),
+        Constraint::Percentage(45),
+    ]).areas(top_row1);
+
+    let [activity_box_area, languages_box_area] = Layout::horizontal([
+        Constraint::Percentage(55),
+        Constraint::Percentage(45),
+    ]).areas(top_row2);
+
+    // ── Repo box ──
     let repo = state.repos.iter().find(|r| r.full_name == *repo_full_name);
 
-    let mut header_lines = vec![
+    let mut repo_lines: Vec<Line> = vec![
         Line::from(vec![
             Span::styled(
-                format!("  {}", repo_full_name),
+                repo_full_name.to_string(),
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
@@ -41,15 +48,20 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     ];
 
     if let Some(r) = repo {
-        if let Some(ref desc) = r.description {
-            header_lines.push(Line::from(Span::styled(
-                format!("  {}", desc),
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
-        header_lines.push(Line::from(vec![
+        let desc = r.description.as_deref().unwrap_or("");
+        let max_desc = repo_box_area.width.saturating_sub(3) as usize;
+        let truncated = if desc.len() > max_desc {
+            format!("{}...", &desc[..max_desc.saturating_sub(3)])
+        } else {
+            desc.to_string()
+        };
+        repo_lines.push(Line::from(Span::styled(
+            truncated,
+            Style::default().fg(Color::DarkGray),
+        )));
+        repo_lines.push(Line::from(vec![
             Span::styled(
-                format!("  {} ", r.language.as_deref().unwrap_or("")),
+                format!("{} ", r.language.as_deref().unwrap_or("")),
                 Style::default().fg(Color::Magenta),
             ),
             Span::styled(format!("· ★ {} ", r.stargazers_count), Style::default().fg(Color::Yellow)),
@@ -68,12 +80,137 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         ]));
     }
 
-    frame.render_widget(Paragraph::new(header_lines), header_area);
+    let repo_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Span::styled(" Repo ", Style::default().fg(Color::Cyan)));
+    frame.render_widget(Paragraph::new(repo_lines).block(repo_block), repo_box_area);
 
-    // ── Repo commit heatmap (always visible) ──
-    if has_activity {
-        render_repo_heatmap(frame, heatmap_area, &state.repo_commit_activity);
+    // ── Health box ──
+    let contributor_count = state.repo_contributors.len();
+    let top_contributors: Vec<String> = state.repo_contributors.iter()
+        .take(3)
+        .map(|c| format!("{} ({})", c.login, c.total_commits))
+        .collect();
+
+    let merged_prs: Vec<&crate::github::prs::PrInfo> = state.repo_prs.iter()
+        .filter(|pr| pr.merged)
+        .collect();
+    let avg_merge = if merged_prs.is_empty() {
+        "--".to_string()
+    } else {
+        let total_days: f64 = merged_prs.iter().filter_map(|pr| {
+            let created = pr.created_at?;
+            let updated = pr.updated_at?;
+            Some(updated.signed_duration_since(created).num_hours() as f64 / 24.0)
+        }).sum();
+        let count = merged_prs.len() as f64;
+        format!("{:.1}d", total_days / count)
+    };
+
+    let total_issues = state.repo_issues.len();
+    let closed_issues = state.repo_issues.iter().filter(|i| i.state == "closed").count();
+    let close_rate = if total_issues == 0 {
+        "--".to_string()
+    } else {
+        format!("{}%", closed_issues * 100 / total_issues)
+    };
+    let close_rate_color = if total_issues == 0 {
+        Color::DarkGray
+    } else if closed_issues * 100 / total_issues.max(1) > 50 {
+        Color::Green
+    } else {
+        Color::Red
+    };
+
+    let health_lines = vec![
+        Line::from(vec![
+            Span::styled("Contributors: ", Style::default().fg(Color::White)),
+            Span::styled(format!("{}", contributor_count), Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(if top_contributors.is_empty() {
+            vec![Span::styled(" No data", Style::default().fg(Color::DarkGray))]
+        } else {
+            vec![Span::styled(format!(" {}", top_contributors.join("  ")), Style::default().fg(Color::Magenta))]
+        }),
+        Line::from(vec![
+            Span::styled("Avg merge: ", Style::default().fg(Color::White)),
+            Span::styled(&avg_merge, Style::default().fg(Color::Yellow)),
+            Span::raw("  "),
+            Span::styled("Close rate: ", Style::default().fg(Color::White)),
+            Span::styled(&close_rate, Style::default().fg(close_rate_color)),
+        ]),
+    ];
+
+    let health_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Span::styled(" Health ", Style::default().fg(Color::Cyan)));
+    frame.render_widget(Paragraph::new(health_lines).block(health_block), health_box_area);
+
+    // ── Activity box ──
+    let total_commits: u32 = state.repo_commit_activity.iter().map(|w| w.total).sum();
+    let recent_freq: (i64, i64) = state.repo_code_frequency.iter()
+        .rev()
+        .take(4)
+        .fold((0i64, 0i64), |acc, &(_, add, del)| (acc.0 + add, acc.1 + del));
+
+    let mut activity_title_spans = vec![
+        Span::styled(" Activity", Style::default().fg(Color::Cyan)),
+        Span::styled(format!(" · {} commits", total_commits), Style::default().fg(Color::DarkGray)),
+    ];
+    if recent_freq.0 != 0 || recent_freq.1 != 0 {
+        activity_title_spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
+        activity_title_spans.push(Span::styled(format!("+{}", format_count(recent_freq.0)), Style::default().fg(Color::Green)));
+        activity_title_spans.push(Span::styled(format!(" / {}", format_count(recent_freq.1)), Style::default().fg(Color::Red)));
     }
+    activity_title_spans.push(Span::raw(" "));
+
+    let activity_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Line::from(activity_title_spans));
+
+    // Render the block first, then heatmap inside
+    let activity_inner = activity_block.inner(activity_box_area);
+    frame.render_widget(activity_block, activity_box_area);
+
+    if !state.repo_commit_activity.is_empty() {
+        let heatmap_lines = build_heatmap_lines(&state.repo_commit_activity, activity_inner.width);
+        frame.render_widget(Paragraph::new(heatmap_lines), activity_inner);
+    }
+
+    // ── Languages box ──
+    let lang_lines: Vec<Line> = if state.repo_languages.is_empty() {
+        vec![
+            Line::from(Span::styled("No language data", Style::default().fg(Color::DarkGray))),
+            Line::from(""),
+            Line::from(""),
+        ]
+    } else {
+        let total_bytes: u64 = state.repo_languages.iter().map(|(_, b)| *b).sum();
+        let bar_width = 20usize;
+
+        state.repo_languages.iter().take(3).map(|(name, bytes)| {
+            let pct = if total_bytes > 0 { *bytes as f64 / total_bytes as f64 * 100.0 } else { 0.0 };
+            let filled = (pct / 100.0 * bar_width as f64).round() as usize;
+            let empty = bar_width.saturating_sub(filled);
+
+            Line::from(vec![
+                Span::styled("█".repeat(filled), Style::default().fg(Color::Green)),
+                Span::styled("░".repeat(empty), Style::default().fg(Color::DarkGray)),
+                Span::raw(" "),
+                Span::styled(format!("{:<12}", name), Style::default().fg(Color::White)),
+                Span::styled(format!("{:>3.0}%", pct), Style::default().fg(Color::DarkGray)),
+            ])
+        }).collect()
+    };
+
+    let languages_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Span::styled(" Languages ", Style::default().fg(Color::Cyan)));
+    frame.render_widget(Paragraph::new(lang_lines).block(languages_block), languages_box_area);
 
     // ── Section tabs ──
     let focused = state.detail_focus == DetailFocus::TabBar;
@@ -535,14 +672,23 @@ fn parse_inline_markdown(text: &str) -> Line<'static> {
     Line::from(spans)
 }
 
-fn render_repo_heatmap(
-    frame: &mut Frame,
-    area: Rect,
-    activity: &[crate::github::commits::WeeklyCommitActivity],
-) {
-    if activity.is_empty() { return; }
+/// Format a number with k/M suffix for compact display.
+fn format_count(n: i64) -> String {
+    let abs = n.unsigned_abs();
+    if abs >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if abs >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        format!("{}", n)
+    }
+}
 
-    // Find max daily count for level scaling
+/// Build heatmap lines (Mon/Wed/Fri) for the activity box.
+fn build_heatmap_lines<'a>(
+    activity: &[crate::github::commits::WeeklyCommitActivity],
+    width: u16,
+) -> Vec<Line<'a>> {
     let max_daily = activity.iter()
         .flat_map(|w| w.days.iter())
         .copied()
@@ -550,27 +696,22 @@ fn render_repo_heatmap(
         .unwrap_or(1)
         .max(1);
 
-    // Limit weeks to fit width
-    let label_width = 5usize; // "Mon " etc
-    let max_weeks = (area.width as usize).saturating_sub(label_width);
+    let label_width = 4usize;
+    let max_weeks = (width as usize).saturating_sub(label_width);
     let visible = if activity.len() > max_weeks {
         &activity[activity.len() - max_weeks..]
     } else {
         activity
     };
 
-    let mut lines: Vec<Line> = Vec::new();
-
-    // Day rows: Mon, Wed, Fri (compact — skip Tue, Thu, Sat, Sun)
-    // GitHub stats API returns days as [Sun, Mon, Tue, Wed, Thu, Fri, Sat]
     let day_rows = [(1, "Mon"), (3, "Wed"), (5, "Fri")];
-    for (day_idx, day_label) in day_rows {
+    day_rows.iter().map(|(day_idx, day_label)| {
         let mut spans: Vec<Span> = vec![Span::styled(
-            format!(" {} ", day_label),
+            format!("{} ", day_label),
             Style::default().fg(Color::DarkGray),
         )];
         for week in visible {
-            let count = week.days[day_idx];
+            let count = week.days[*day_idx];
             let level = if count == 0 { 0 }
                 else if count <= max_daily / 4 { 1 }
                 else if count <= max_daily / 2 { 2 }
@@ -579,17 +720,8 @@ fn render_repo_heatmap(
             let (ch, style) = level_to_cell(level);
             spans.push(Span::styled(String::from(ch), style));
         }
-        lines.push(Line::from(spans));
-    }
-
-    // Stats line
-    let total: u32 = activity.iter().map(|w| w.total).sum();
-    lines.push(Line::from(Span::styled(
-        format!("      {} commits this year", total),
-        Style::default().fg(Color::DarkGray),
-    )));
-
-    frame.render_widget(Paragraph::new(lines), area);
+        Line::from(spans)
+    }).collect()
 }
 
 fn level_to_cell(level: u8) -> (char, Style) {
