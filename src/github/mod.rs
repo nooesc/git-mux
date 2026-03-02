@@ -1,8 +1,10 @@
 pub mod auth;
 pub mod avatar;
 pub mod ci;
+pub mod code_frequency;
 pub mod commits;
 pub mod contributions;
+pub mod contributors;
 pub mod issues;
 pub mod languages;
 pub mod notifications;
