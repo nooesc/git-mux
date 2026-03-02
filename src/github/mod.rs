@@ -4,6 +4,7 @@ pub mod ci;
 pub mod commits;
 pub mod contributions;
 pub mod issues;
+pub mod languages;
 pub mod notifications;
 pub mod prs;
 pub mod readme;
