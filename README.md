@@ -1,5 +1,3 @@
-> **WIP** — This project is under active development and not yet feature-complete. Expect rough edges, missing functionality, and breaking changes.
-
 # git-mux
 
 A terminal UI dashboard for GitHub. Browse your repos, view commit history, PRs, issues, CI status, and contribution stats — all without leaving the terminal.
