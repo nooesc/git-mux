@@ -1,14 +1,14 @@
-use anyhow::Result;
 use super::GitHubClient;
+use anyhow::Result;
 
 impl GitHubClient {
     /// Fetch language breakdown for a repo.
     /// Returns vec of (language_name, bytes) sorted by bytes descending.
     pub async fn fetch_languages(&self, owner: &str, repo: &str) -> Result<Vec<(String, u64)>> {
-        let result: serde_json::Value = self.octocrab.get(
-            format!("/repos/{}/{}/languages", owner, repo),
-            None::<&()>,
-        ).await?;
+        let result: serde_json::Value = self
+            .octocrab
+            .get(format!("/repos/{}/{}/languages", owner, repo), None::<&()>)
+            .await?;
 
         let mut langs: Vec<(String, u64)> = result
             .as_object()

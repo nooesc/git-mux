@@ -1,16 +1,25 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::process::Command;
+use std::sync::OnceLock;
+
+static TOKEN_CACHE: OnceLock<String> = OnceLock::new();
 
 /// Extract GitHub token. Priority:
 /// 1. `gh auth token` subprocess
 /// 2. GITHUB_TOKEN env var
 pub fn get_token() -> Result<String> {
+    if let Some(token) = TOKEN_CACHE.get() {
+        return Ok(token.clone());
+    }
+
     if let Ok(token) = get_token_from_gh_cli() {
+        let _ = TOKEN_CACHE.set(token.clone());
         return Ok(token);
     }
     if let Ok(token) = std::env::var("GITHUB_TOKEN")
         && !token.is_empty()
     {
+        let _ = TOKEN_CACHE.set(token.clone());
         return Ok(token);
     }
     bail!(

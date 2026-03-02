@@ -40,8 +40,12 @@ fn default_general() -> GeneralConfig {
         default_view: "repos".to_string(),
     }
 }
-fn default_refresh_interval() -> u64 { 60 }
-fn default_view() -> String { "repos".to_string() }
+fn default_refresh_interval() -> u64 {
+    60
+}
+fn default_view() -> String {
+    "repos".to_string()
+}
 
 impl Config {
     pub fn load() -> Result<Self> {
@@ -66,7 +70,7 @@ impl Config {
     fn config_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("ghd")
+            .join("git-mux")
             .join("config.toml")
     }
 
@@ -89,20 +93,26 @@ mod tests {
 
     #[test]
     fn test_partial_config() {
-        let config: Config = toml::from_str(r#"
+        let config: Config = toml::from_str(
+            r#"
             [general]
             refresh_interval_secs = 30
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(config.general.refresh_interval_secs, 30);
         assert_eq!(config.general.default_view, "repos");
     }
 
     #[test]
     fn test_repo_exclusion_config() {
-        let config: Config = toml::from_str(r#"
+        let config: Config = toml::from_str(
+            r#"
             [repos]
             exclude = ["owner/repo-name", "org/internal-tool"]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(config.repos.exclude.len(), 2);
         assert_eq!(config.repos.exclude[0], "owner/repo-name");
     }

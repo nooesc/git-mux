@@ -52,7 +52,7 @@ pub async fn download_avatar(url: &str) -> Result<DynamicImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{RgbImage, DynamicImage};
+    use image::{DynamicImage, RgbImage};
 
     #[test]
     fn test_halfblocks_basic() {

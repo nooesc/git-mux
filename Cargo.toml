@@ -1,5 +1,5 @@
 [package]
-name = "ghd"
+name = "git-mux"
 version = "0.1.0"
 edition = "2024"
 description = "GitHub Dashboard TUI"

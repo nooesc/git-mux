@@ -1,8 +1,9 @@
+use super::GitHubClient;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use super::GitHubClient;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueInfo {
     pub number: u64,
     pub title: String,
@@ -20,21 +21,34 @@ impl GitHubClient {
         let mut issues = Vec::new();
         let mut page = 1u32;
         loop {
-            let batch: Vec<serde_json::Value> = self.octocrab.get(
-                format!("/repos/{}/{}/issues", owner, repo),
-                Some(&[("per_page", "100"), ("page", &page.to_string()), ("state", "all")]),
-            ).await?;
+            let batch: Vec<serde_json::Value> = self
+                .octocrab
+                .get(
+                    format!("/repos/{}/{}/issues", owner, repo),
+                    Some(&[
+                        ("per_page", "100"),
+                        ("page", &page.to_string()),
+                        ("state", "all"),
+                    ]),
+                )
+                .await?;
 
-            if batch.is_empty() { break; }
+            if batch.is_empty() {
+                break;
+            }
             let done = batch.len() < 100;
 
             for item in &batch {
                 // GitHub's issues endpoint also returns PRs — skip them
-                if item.get("pull_request").is_some() { continue; }
+                if item.get("pull_request").is_some() {
+                    continue;
+                }
                 issues.push(parse_issue(item));
             }
 
-            if done || page >= 5 { break; }
+            if done || page >= 5 {
+                break;
+            }
             page += 1;
         }
         Ok(issues)
@@ -49,7 +63,11 @@ fn parse_issue(json: &serde_json::Value) -> IssueInfo {
         user: json["user"]["login"].as_str().unwrap_or("").to_string(),
         labels: json["labels"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|l| l["name"].as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l["name"].as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default(),
         created_at: json["created_at"].as_str().and_then(|s| s.parse().ok()),
         updated_at: json["updated_at"].as_str().and_then(|s| s.parse().ok()),

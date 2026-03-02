@@ -1,15 +1,16 @@
+use super::GitHubClient;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use super::GitHubClient;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeeklyCommitActivity {
     pub week_start: DateTime<Utc>,
     pub total: u32,
     pub days: [u32; 7], // Sun-Sat
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitInfo {
     pub sha: String,
     pub short_sha: String,
@@ -21,14 +22,22 @@ pub struct CommitInfo {
 }
 
 impl GitHubClient {
-    pub async fn fetch_commit_activity(&self, owner: &str, repo: &str) -> Result<Vec<WeeklyCommitActivity>> {
+    pub async fn fetch_commit_activity(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<WeeklyCommitActivity>> {
         // GitHub stats API returns 202 while computing; retry a few times
         let mut result = serde_json::Value::Null;
         for _ in 0..3 {
-            result = self.octocrab.get(
-                format!("/repos/{}/{}/stats/commit_activity", owner, repo),
-                None::<&()>,
-            ).await.unwrap_or(serde_json::Value::Null);
+            result = self
+                .octocrab
+                .get(
+                    format!("/repos/{}/{}/stats/commit_activity", owner, repo),
+                    None::<&()>,
+                )
+                .await
+                .unwrap_or(serde_json::Value::Null);
             if result.is_array() {
                 break;
             }
@@ -47,35 +56,61 @@ impl GitHubClient {
                         days[i] = d.as_u64().unwrap_or(0) as u32;
                     }
                 }
-                weeks.push(WeeklyCommitActivity { week_start, total, days });
+                weeks.push(WeeklyCommitActivity {
+                    week_start,
+                    total,
+                    days,
+                });
             }
         }
         Ok(weeks)
     }
 
     pub async fn fetch_repo_commits(&self, owner: &str, repo: &str) -> Result<Vec<CommitInfo>> {
-        let result: Vec<serde_json::Value> = self.octocrab.get(
-            format!("/repos/{}/{}/commits", owner, repo),
-            Some(&[("per_page", "50")]),
-        ).await?;
+        let result: Vec<serde_json::Value> = self
+            .octocrab
+            .get(
+                format!("/repos/{}/{}/commits", owner, repo),
+                Some(&[("per_page", "50")]),
+            )
+            .await?;
 
         let mut commits = Vec::new();
         for item in &result {
             let sha = item["sha"].as_str().unwrap_or("").to_string();
             let short_sha = sha.chars().take(7).collect();
             let commit = &item["commit"];
-            let message = commit["message"].as_str().unwrap_or("")
-                .lines().next().unwrap_or("").to_string();
+            let message = commit["message"]
+                .as_str()
+                .unwrap_or("")
+                .lines()
+                .next()
+                .unwrap_or("")
+                .to_string();
             let author = commit["author"]["name"].as_str().unwrap_or("").to_string();
-            let date = commit["author"]["date"].as_str()
+            let date = commit["author"]["date"]
+                .as_str()
                 .and_then(|s| s.parse::<DateTime<Utc>>().ok())
                 .unwrap_or_default();
-            let parents = item["parents"].as_array()
-                .map(|arr| arr.iter().filter_map(|p| p["sha"].as_str().map(String::from)).collect())
+            let parents = item["parents"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|p| p["sha"].as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             let html_url = item["html_url"].as_str().unwrap_or("").to_string();
 
-            commits.push(CommitInfo { sha, short_sha, message, author, date, parents, html_url });
+            commits.push(CommitInfo {
+                sha,
+                short_sha,
+                message,
+                author,
+                date,
+                parents,
+                html_url,
+            });
         }
         Ok(commits)
     }

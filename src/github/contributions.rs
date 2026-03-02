@@ -1,15 +1,16 @@
+use super::GitHubClient;
 use anyhow::Result;
 use chrono::NaiveDate;
-use super::GitHubClient;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContributionDay {
     pub date: NaiveDate,
     pub count: u32,
     pub level: u8, // 0-4, matching GitHub's intensity levels
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContributionData {
     pub days: Vec<ContributionDay>,
     pub total: u32,

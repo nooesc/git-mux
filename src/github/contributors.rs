@@ -1,7 +1,8 @@
-use anyhow::Result;
 use super::GitHubClient;
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContributorInfo {
     pub login: String,
     pub total_commits: u32,
@@ -11,13 +12,21 @@ impl GitHubClient {
     /// Fetch contributor stats for a repo.
     /// GitHub stats API returns 202 while computing; retry a few times.
     /// Returns vec of ContributorInfo sorted by total_commits descending.
-    pub async fn fetch_contributors(&self, owner: &str, repo: &str) -> Result<Vec<ContributorInfo>> {
+    pub async fn fetch_contributors(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<ContributorInfo>> {
         let mut result = serde_json::Value::Null;
         for _ in 0..3 {
-            result = self.octocrab.get(
-                format!("/repos/{}/{}/stats/contributors", owner, repo),
-                None::<&()>,
-            ).await.unwrap_or(serde_json::Value::Null);
+            result = self
+                .octocrab
+                .get(
+                    format!("/repos/{}/{}/stats/contributors", owner, repo),
+                    None::<&()>,
+                )
+                .await
+                .unwrap_or(serde_json::Value::Null);
             if result.is_array() {
                 break;
             }
@@ -27,12 +36,15 @@ impl GitHubClient {
         let mut contributors: Vec<ContributorInfo> = result
             .as_array()
             .map(|arr| {
-                arr.iter().map(|item| {
-                    ContributorInfo {
-                        login: item["author"]["login"].as_str().unwrap_or("unknown").to_string(),
+                arr.iter()
+                    .map(|item| ContributorInfo {
+                        login: item["author"]["login"]
+                            .as_str()
+                            .unwrap_or("unknown")
+                            .to_string(),
                         total_commits: item["total"].as_u64().unwrap_or(0) as u32,
-                    }
-                }).collect()
+                    })
+                    .collect()
             })
             .unwrap_or_default();
 

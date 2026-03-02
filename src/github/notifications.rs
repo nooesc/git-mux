@@ -1,8 +1,9 @@
+use super::GitHubClient;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use super::GitHubClient;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
     pub id: String,
     pub reason: String,
@@ -16,26 +17,30 @@ pub struct Notification {
 
 impl GitHubClient {
     pub async fn fetch_notifications(&self) -> Result<Vec<Notification>> {
-        let items: Vec<serde_json::Value> = self.octocrab.get(
-            "/notifications",
-            Some(&[("per_page", "50")]),
-        ).await?;
+        let items: Vec<serde_json::Value> = self
+            .octocrab
+            .get("/notifications", Some(&[("per_page", "50")]))
+            .await?;
 
-        Ok(items.iter().map(|item| {
-            Notification {
+        Ok(items
+            .iter()
+            .map(|item| Notification {
                 id: item["id"].as_str().unwrap_or("").to_string(),
                 reason: item["reason"].as_str().unwrap_or("").to_string(),
                 subject_title: item["subject"]["title"].as_str().unwrap_or("").to_string(),
                 subject_type: item["subject"]["type"].as_str().unwrap_or("").to_string(),
-                repo_full_name: item["repository"]["full_name"].as_str().unwrap_or("").to_string(),
+                repo_full_name: item["repository"]["full_name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
                 updated_at: item["updated_at"].as_str().and_then(|s| s.parse().ok()),
                 unread: item["unread"].as_bool().unwrap_or(false),
                 url: item["subject"]["url"].as_str().map(|s| {
                     s.replace("api.github.com/repos", "github.com")
-                     .replace("/pulls/", "/pull/")
+                        .replace("/pulls/", "/pull/")
                 }),
-            }
-        }).collect())
+            })
+            .collect())
     }
 
     pub async fn mark_notification_read(&self, thread_id: &str) -> Result<()> {

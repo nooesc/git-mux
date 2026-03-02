@@ -1,8 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use chrono::{DateTime, Utc};
 use image::DynamicImage;
 
+use crate::github::UserInfo;
 use crate::github::ci::WorkflowRun;
 use crate::github::commits::{CommitInfo, WeeklyCommitActivity};
 use crate::github::contributions::ContributionData;
@@ -10,8 +12,7 @@ use crate::github::contributors::ContributorInfo;
 use crate::github::issues::IssueInfo;
 use crate::github::notifications::Notification;
 use crate::github::prs::PrInfo;
-use crate::github::repos::RepoInfo;
-use crate::github::UserInfo;
+use crate::github::repos::{RepoInfo, RepoOpenCounts};
 
 // ── Screen hierarchy ──
 
@@ -130,13 +131,14 @@ pub struct AppState {
     pub repo_languages: Vec<(String, u64)>,
     pub repo_contributors: Vec<ContributorInfo>,
     pub repo_code_frequency: Vec<(i64, i64, i64)>,
+    pub detail_cache_saved_at: Option<DateTime<Utc>>,
 
     // Notifications (global, shown as overlay)
     pub notifications: Vec<Notification>,
     pub notif_selected: usize,
     pub show_notifications: bool,
 
-    // Loading state (string keys: "repos", "contributions", "avatar", "notifications", "repo_detail")
+    // Loading state (string keys: "repos", "contributions", "avatar", "notifications", "repo_detail_fast", "repo_detail_stats")
     pub loading: HashSet<String>,
 
     // Error
@@ -147,6 +149,7 @@ pub struct AppState {
     pub show_help: bool,
     pub search_mode: bool,
     pub search_query: String,
+    pub search_input: String,
 
     // Open-in-browser
     pub pending_open_url: Option<String>,
@@ -184,6 +187,7 @@ impl AppState {
             repo_languages: Vec::new(),
             repo_contributors: Vec::new(),
             repo_code_frequency: Vec::new(),
+            detail_cache_saved_at: None,
             notifications: Vec::new(),
             notif_selected: 0,
             show_notifications: false,
@@ -193,6 +197,7 @@ impl AppState {
             show_help: false,
             search_mode: false,
             search_query: String::new(),
+            search_input: String::new(),
             pending_open_url: None,
             term_width: 120,
             term_height: 40,
@@ -201,16 +206,26 @@ impl AppState {
 
     /// Number of card columns based on terminal width.
     pub fn num_card_cols(&self) -> usize {
-        if self.term_width >= 120 { 3 }
-        else if self.term_width >= 80 { 2 }
-        else { 1 }
+        if self.term_width >= 120 {
+            3
+        } else if self.term_width >= 80 {
+            2
+        } else {
+            1
+        }
     }
 
     /// Build the list of filter options from loaded repos.
     pub fn filter_options(&self) -> Vec<RepoFilter> {
         let mut opts = vec![RepoFilter::All, RepoFilter::Public, RepoFilter::Private];
-        let username = self.user_info.as_ref().map(|u| u.login.as_str()).unwrap_or("");
-        let mut orgs: Vec<&str> = self.repos.iter()
+        let username = self
+            .user_info
+            .as_ref()
+            .map(|u| u.login.as_str())
+            .unwrap_or("");
+        let mut orgs: Vec<&str> = self
+            .repos
+            .iter()
             .map(|r| r.owner.as_str())
             .filter(|o| !o.is_empty() && *o != username)
             .collect();
@@ -224,24 +239,38 @@ impl AppState {
 
     /// Get repos filtered by search query and repo filter.
     pub fn filtered_repos(&self) -> Vec<&RepoInfo> {
-        let filter_iter = self.repos.iter().filter(|r| {
-            match &self.repo_filter {
-                RepoFilter::All => true,
-                RepoFilter::Public => !r.is_private,
-                RepoFilter::Private => r.is_private,
-                RepoFilter::Org(name) => r.owner == *name,
+        let active_query = if self.search_mode {
+            self.search_input.as_str()
+        } else {
+            self.search_query.as_str()
+        };
+        let current_login = self.user_info.as_ref().map(|u| u.login.as_str());
+        let filter_iter = self.repos.iter().filter(|r| match &self.repo_filter {
+            RepoFilter::All => true,
+            RepoFilter::Public => {
+                !r.is_private && current_login.map(|login| r.owner == login).unwrap_or(true)
             }
+            RepoFilter::Private => {
+                r.is_private && current_login.map(|login| r.owner == login).unwrap_or(true)
+            }
+            RepoFilter::Org(name) => r.owner == *name,
         });
 
-        if self.search_query.is_empty() {
+        if active_query.is_empty() {
             return filter_iter.collect();
         }
-        let q = self.search_query.to_lowercase();
-        filter_iter.filter(|r| {
-            r.full_name.to_lowercase().contains(&q)
-                || r.description.as_ref().is_some_and(|d| d.to_lowercase().contains(&q))
-                || r.language.as_ref().is_some_and(|l| l.to_lowercase().contains(&q))
-        }).collect()
+        let q = active_query.to_lowercase();
+        filter_iter
+            .filter(|r| {
+                r.full_name.to_lowercase().contains(&q)
+                    || r.description
+                        .as_ref()
+                        .is_some_and(|d| d.to_lowercase().contains(&q))
+                    || r.language
+                        .as_ref()
+                        .is_some_and(|l| l.to_lowercase().contains(&q))
+            })
+            .collect()
     }
 
     /// Get the currently selected repo (if any), accounting for search filter.
@@ -250,50 +279,44 @@ impl AppState {
     }
 
     /// Get repo detail items filtered by search query.
-    pub fn filtered_detail_items(&self) -> Vec<DetailItem> {
+    pub fn filtered_detail_items(&self) -> Vec<DetailItem<'_>> {
         let items: Vec<DetailItem> = match &self.screen {
-            Screen::RepoDetail { section: RepoSection::PRs, .. } => {
-                self.repo_prs.iter().map(|pr| DetailItem::Pr(pr)).collect()
-            }
-            Screen::RepoDetail { section: RepoSection::Issues, .. } => {
-                self.repo_issues.iter().map(|i| DetailItem::Issue(i)).collect()
-            }
-            Screen::RepoDetail { section: RepoSection::CI, .. } => {
-                self.repo_ci.iter().map(|r| DetailItem::Ci(r)).collect()
-            }
-            Screen::RepoDetail { section: RepoSection::Commits, .. } => {
-                self.repo_commits.iter().map(|c| DetailItem::Commit(c)).collect()
-            }
-            Screen::RepoDetail { section: RepoSection::Info, .. } => {
-                Vec::new()
-            }
+            Screen::RepoDetail {
+                section: RepoSection::PRs,
+                ..
+            } => self.repo_prs.iter().map(|pr| DetailItem::Pr(pr)).collect(),
+            Screen::RepoDetail {
+                section: RepoSection::Issues,
+                ..
+            } => self
+                .repo_issues
+                .iter()
+                .map(|i| DetailItem::Issue(i))
+                .collect(),
+            Screen::RepoDetail {
+                section: RepoSection::CI,
+                ..
+            } => self.repo_ci.iter().map(|r| DetailItem::Ci(r)).collect(),
+            Screen::RepoDetail {
+                section: RepoSection::Commits,
+                ..
+            } => self
+                .repo_commits
+                .iter()
+                .map(|c| DetailItem::Commit(c))
+                .collect(),
+            Screen::RepoDetail {
+                section: RepoSection::Info,
+                ..
+            } => Vec::new(),
             _ => Vec::new(),
         };
-
-        if self.search_query.is_empty() {
-            return items;
-        }
-        let q = self.search_query.to_lowercase();
-        items.into_iter().filter(|item| {
-            match item {
-                DetailItem::Pr(pr) => pr.title.to_lowercase().contains(&q) || pr.user.to_lowercase().contains(&q),
-                DetailItem::Issue(i) => i.title.to_lowercase().contains(&q) || i.user.to_lowercase().contains(&q),
-                DetailItem::Ci(r) => r.name.to_lowercase().contains(&q) || r.head_branch.to_lowercase().contains(&q),
-                DetailItem::Commit(c) => c.message.to_lowercase().contains(&q) || c.author.to_lowercase().contains(&q),
-            }
-        }).collect()
+        items
     }
 
     /// Filtered notifications.
     pub fn filtered_notifications(&self) -> Vec<&Notification> {
-        if self.search_query.is_empty() {
-            return self.notifications.iter().collect();
-        }
-        let q = self.search_query.to_lowercase();
-        self.notifications.iter().filter(|n| {
-            n.subject_title.to_lowercase().contains(&q)
-                || n.repo_full_name.to_lowercase().contains(&q)
-        }).collect()
+        self.notifications.iter().collect()
     }
 
     /// Count of unread notifications.
@@ -305,7 +328,10 @@ impl AppState {
     pub fn breadcrumb(&self) -> String {
         match &self.screen {
             Screen::Home => "Home".to_string(),
-            Screen::RepoDetail { repo_full_name, section } => {
+            Screen::RepoDetail {
+                repo_full_name,
+                section,
+            } => {
                 format!("Home > {} > {}", repo_full_name, section.label())
             }
         }
@@ -335,15 +361,18 @@ pub enum Message {
     GoHome,
     CycleSection,
     ToggleViewMode,
+    ToggleListMode,
 
     // Data loaded
     ReposLoaded(Vec<RepoInfo>),
+    RepoOpenCountsLoaded(Vec<RepoOpenCounts>),
     ContributionsLoaded(ContributionData),
     AvatarLoaded(Vec<u8>),
     UserInfoLoaded(UserInfo),
     NotificationsLoaded(Vec<Notification>),
-    RepoDetailLoaded {
+    RepoDetailFromCacheLoaded {
         repo: String,
+        cached_at: DateTime<Utc>,
         prs: Vec<PrInfo>,
         issues: Vec<IssueInfo>,
         ci: Vec<WorkflowRun>,
@@ -351,6 +380,21 @@ pub enum Message {
         commit_activity: Vec<WeeklyCommitActivity>,
         readme: Option<String>,
         languages: Vec<(String, u64)>,
+        contributors: Vec<ContributorInfo>,
+        code_frequency: Vec<(i64, i64, i64)>,
+    },
+    RepoDetailFastLoaded {
+        repo: String,
+        prs: Vec<PrInfo>,
+        issues: Vec<IssueInfo>,
+        ci: Vec<WorkflowRun>,
+        commits: Vec<CommitInfo>,
+        readme: Option<String>,
+        languages: Vec<(String, u64)>,
+    },
+    RepoDetailStatsLoaded {
+        repo: String,
+        commit_activity: Vec<WeeklyCommitActivity>,
         contributors: Vec<ContributorInfo>,
         code_frequency: Vec<(i64, i64, i64)>,
     },
@@ -367,7 +411,8 @@ pub enum Message {
     DismissError,
     ToggleHelp,
     EnterSearch,
-    ExitSearch,
+    ConfirmSearch,
+    CancelSearch,
     SearchInput(char),
     SearchBackspace,
     Resize(u16, u16),
@@ -394,13 +439,51 @@ pub fn update(state: &mut AppState, msg: Message) {
         }
 
         // ── Data loaded ──
-
         Message::ReposLoaded(repos) => {
-            state.repos = repos.into_iter().filter(|r| {
-                !state.exclude_orgs.iter().any(|o| o.eq_ignore_ascii_case(&r.owner))
-                    && !state.exclude_repos.iter().any(|e| e.eq_ignore_ascii_case(&r.full_name))
-            }).collect();
+            let cached_counts: HashMap<String, (Option<u32>, Option<u32>)> = state
+                .repos
+                .iter()
+                .map(|r| {
+                    (
+                        r.full_name.clone(),
+                        (r.open_issues_only_count, r.open_prs_count),
+                    )
+                })
+                .collect();
+
+            state.repos = repos
+                .into_iter()
+                .filter(|r| {
+                    !state
+                        .exclude_orgs
+                        .iter()
+                        .any(|o| o.eq_ignore_ascii_case(&r.owner))
+                        && !state
+                            .exclude_repos
+                            .iter()
+                            .any(|e| e.eq_ignore_ascii_case(&r.full_name))
+                })
+                .map(|mut r| {
+                    if let Some((issues, prs)) = cached_counts.get(&r.full_name) {
+                        if r.open_issues_only_count.is_none() {
+                            r.open_issues_only_count = *issues;
+                        }
+                        if r.open_prs_count.is_none() {
+                            r.open_prs_count = *prs;
+                        }
+                    }
+                    r
+                })
+                .collect();
             state.loading.remove("repos");
+        }
+        Message::RepoOpenCountsLoaded(counts) => {
+            for c in counts {
+                if let Some(repo) = state.repos.iter_mut().find(|r| r.full_name == c.full_name) {
+                    repo.open_issues_only_count = Some(c.open_issues_count);
+                    repo.open_prs_count = Some(c.open_prs_count);
+                }
+            }
         }
         Message::ContributionsLoaded(data) => {
             state.contributions = data;
@@ -417,26 +500,73 @@ pub fn update(state: &mut AppState, msg: Message) {
             state.notifications = notifs;
             state.loading.remove("notifications");
         }
-        Message::RepoDetailLoaded { repo, prs, issues, ci, commits, commit_activity, readme, languages, contributors, code_frequency } => {
-            // Only apply if we're still on the same repo
-            if let Screen::RepoDetail { repo_full_name, .. } = &state.screen {
-                if *repo_full_name == repo {
-                    state.repo_prs = prs;
-                    state.repo_issues = issues;
-                    state.repo_ci = ci;
-                    state.repo_commits = commits;
-                    state.repo_commit_activity = commit_activity;
-                    state.repo_readme = readme;
-                    state.repo_languages = languages;
-                    state.repo_contributors = contributors;
-                    state.repo_code_frequency = code_frequency;
-                    state.loading.remove("repo_detail");
-                }
+        Message::RepoDetailFromCacheLoaded {
+            repo,
+            cached_at,
+            prs,
+            issues,
+            ci,
+            commits,
+            commit_activity,
+            readme,
+            languages,
+            contributors,
+            code_frequency,
+        } => {
+            if let Screen::RepoDetail { repo_full_name, .. } = &state.screen
+                && *repo_full_name == repo
+            {
+                state.repo_prs = prs;
+                state.repo_issues = issues;
+                state.repo_ci = ci;
+                state.repo_commits = commits;
+                state.repo_commit_activity = commit_activity;
+                state.repo_readme = readme;
+                state.repo_languages = languages;
+                state.repo_contributors = contributors;
+                state.repo_code_frequency = code_frequency;
+                state.detail_cache_saved_at = Some(cached_at);
             }
         }
-
+        Message::RepoDetailFastLoaded {
+            repo,
+            prs,
+            issues,
+            ci,
+            commits,
+            readme,
+            languages,
+        } => {
+            if let Screen::RepoDetail { repo_full_name, .. } = &state.screen
+                && *repo_full_name == repo
+            {
+                state.repo_prs = prs;
+                state.repo_issues = issues;
+                state.repo_ci = ci;
+                state.repo_commits = commits;
+                state.repo_readme = readme;
+                state.repo_languages = languages;
+                state.detail_cache_saved_at = None;
+                state.loading.remove("repo_detail_fast");
+            }
+        }
+        Message::RepoDetailStatsLoaded {
+            repo,
+            commit_activity,
+            contributors,
+            code_frequency,
+        } => {
+            if let Screen::RepoDetail { repo_full_name, .. } = &state.screen
+                && *repo_full_name == repo
+            {
+                state.repo_commit_activity = commit_activity;
+                state.repo_contributors = contributors;
+                state.repo_code_frequency = code_frequency;
+                state.detail_cache_saved_at = None;
+                state.loading.remove("repo_detail_stats");
+            }
+        }
         // ── Navigation ──
-
         Message::Up => {
             if state.show_notifications {
                 if state.notif_selected > 0 {
@@ -528,58 +658,54 @@ pub fn update(state: &mut AppState, msg: Message) {
             }
         }
 
-        Message::Left => {
-            match &state.screen {
-                Screen::Home => {
-                    if state.home_focus == HomeFocus::FilterBar {
-                        if state.filter_index > 0 {
-                            state.filter_index -= 1;
-                            let opts = state.filter_options();
-                            state.repo_filter = opts[state.filter_index].clone();
-                            state.card_selected = 0;
-                        }
-                    } else if state.view_mode == ViewMode::Cards && state.card_selected > 0 {
-                        state.card_selected -= 1;
-                    }
-                }
-                Screen::RepoDetail { .. } => {
-                    if state.detail_focus == DetailFocus::TabBar {
-                        if let Screen::RepoDetail { section, .. } = &mut state.screen {
-                            *section = section.prev();
-                            state.detail_selected = 0;
-                        }
-                    }
-                }
-            }
-        }
-
-        Message::Right => {
-            match &state.screen {
-                Screen::Home => {
-                    if state.home_focus == HomeFocus::FilterBar {
+        Message::Left => match &state.screen {
+            Screen::Home => {
+                if state.home_focus == HomeFocus::FilterBar {
+                    if state.filter_index > 0 {
+                        state.filter_index -= 1;
                         let opts = state.filter_options();
-                        if state.filter_index + 1 < opts.len() {
-                            state.filter_index += 1;
-                            state.repo_filter = opts[state.filter_index].clone();
-                            state.card_selected = 0;
-                        }
-                    } else if state.view_mode == ViewMode::Cards {
-                        let len = state.filtered_repos().len();
-                        if state.card_selected + 1 < len {
-                            state.card_selected += 1;
-                        }
+                        state.repo_filter = opts[state.filter_index].clone();
+                        state.card_selected = 0;
                     }
+                } else if state.view_mode == ViewMode::Cards && state.card_selected > 0 {
+                    state.card_selected -= 1;
                 }
-                Screen::RepoDetail { .. } => {
-                    if state.detail_focus == DetailFocus::TabBar {
-                        if let Screen::RepoDetail { section, .. } = &mut state.screen {
-                            *section = section.next();
-                            state.detail_selected = 0;
-                        }
+            }
+            Screen::RepoDetail { .. } => {
+                if state.detail_focus == DetailFocus::TabBar {
+                    if let Screen::RepoDetail { section, .. } = &mut state.screen {
+                        *section = section.prev();
+                        state.detail_selected = 0;
                     }
                 }
             }
-        }
+        },
+
+        Message::Right => match &state.screen {
+            Screen::Home => {
+                if state.home_focus == HomeFocus::FilterBar {
+                    let opts = state.filter_options();
+                    if state.filter_index + 1 < opts.len() {
+                        state.filter_index += 1;
+                        state.repo_filter = opts[state.filter_index].clone();
+                        state.card_selected = 0;
+                    }
+                } else if state.view_mode == ViewMode::Cards {
+                    let len = state.filtered_repos().len();
+                    if state.card_selected + 1 < len {
+                        state.card_selected += 1;
+                    }
+                }
+            }
+            Screen::RepoDetail { .. } => {
+                if state.detail_focus == DetailFocus::TabBar {
+                    if let Screen::RepoDetail { section, .. } = &mut state.screen {
+                        *section = section.next();
+                        state.detail_selected = 0;
+                    }
+                }
+            }
+        },
 
         Message::Select => {
             if state.show_notifications {
@@ -615,8 +741,9 @@ pub fn update(state: &mut AppState, msg: Message) {
                                 state.repo_languages.clear();
                                 state.repo_contributors.clear();
                                 state.repo_code_frequency.clear();
-                                state.loading.insert("repo_detail".to_string());
-                                state.search_query.clear();
+                                state.detail_cache_saved_at = None;
+                                state.loading.insert("repo_detail_fast".to_string());
+                                state.loading.insert("repo_detail_stats".to_string());
                                 state.search_mode = false;
                             }
                         }
@@ -643,17 +770,19 @@ pub fn update(state: &mut AppState, msg: Message) {
         }
 
         Message::Back => {
-            if state.show_notifications {
+            if state.show_help {
+                state.show_help = false;
+            } else if state.show_notifications {
                 state.show_notifications = false;
             } else if state.search_mode {
                 state.search_mode = false;
-                state.search_query.clear();
+                state.search_input = state.search_query.clone();
             } else {
                 match &state.screen {
                     Screen::RepoDetail { .. } => {
                         state.screen = Screen::Home;
                         state.detail_selected = 0;
-                        state.search_query.clear();
+                        state.detail_cache_saved_at = None;
                     }
                     Screen::Home => {} // already at root
                 }
@@ -664,7 +793,8 @@ pub fn update(state: &mut AppState, msg: Message) {
             state.screen = Screen::Home;
             state.show_notifications = false;
             state.search_mode = false;
-            state.search_query.clear();
+            state.search_input = state.search_query.clone();
+            state.detail_cache_saved_at = None;
         }
 
         Message::CycleSection => {
@@ -678,6 +808,33 @@ pub fn update(state: &mut AppState, msg: Message) {
         }
 
         Message::ToggleViewMode => {
+            match &mut state.screen {
+                Screen::Home => {
+                    let opts = state.filter_options();
+                    if opts.is_empty() {
+                        return;
+                    }
+
+                    // Keep filter_index aligned even if options changed after data refresh.
+                    let current = opts
+                        .iter()
+                        .position(|f| *f == state.repo_filter)
+                        .unwrap_or(0);
+                    let next = (current + 1) % opts.len();
+
+                    state.filter_index = next;
+                    state.repo_filter = opts[next].clone();
+                    state.home_focus = HomeFocus::FilterBar;
+                    state.card_selected = 0;
+                }
+                Screen::RepoDetail { section, .. } => {
+                    *section = section.next();
+                    state.detail_selected = 0;
+                    state.detail_focus = DetailFocus::TabBar;
+                }
+            }
+        }
+        Message::ToggleListMode => {
             if state.screen == Screen::Home {
                 state.view_mode = match state.view_mode {
                     ViewMode::Cards => ViewMode::List,
@@ -687,7 +844,6 @@ pub fn update(state: &mut AppState, msg: Message) {
         }
 
         // ── Actions ──
-
         Message::ToggleNotifications => {
             state.show_notifications = !state.show_notifications;
             if state.show_notifications {
@@ -708,25 +864,31 @@ pub fn update(state: &mut AppState, msg: Message) {
         }
 
         // ── UI ──
-
         Message::ToggleHelp => state.show_help = !state.show_help,
-        Message::EnterSearch => state.search_mode = true,
-        Message::ExitSearch => {
+        Message::EnterSearch => {
+            if state.screen == Screen::Home {
+                state.search_mode = true;
+                state.search_input = state.search_query.clone();
+            }
+        }
+        Message::ConfirmSearch => {
+            state.search_query = state.search_input.clone();
+            state.card_selected = 0;
+            state.detail_selected = 0;
+            state.notif_selected = 0;
             state.search_mode = false;
-            state.search_query.clear();
+        }
+        Message::CancelSearch => {
+            state.search_mode = false;
+            state.search_input = state.search_query.clone();
         }
         Message::SearchInput(c) => {
-            state.search_query.push(c);
-            // Reset selection when search changes
+            state.search_input.push(c);
             state.card_selected = 0;
-            state.detail_selected = 0;
-            state.notif_selected = 0;
         }
         Message::SearchBackspace => {
-            state.search_query.pop();
+            state.search_input.pop();
             state.card_selected = 0;
-            state.detail_selected = 0;
-            state.notif_selected = 0;
         }
 
         Message::Tick => {
@@ -804,8 +966,12 @@ mod tests {
         state.view_mode = ViewMode::Cards;
         state.term_width = 120; // 3 columns
         state.repos = vec![
-            make_repo("a"), make_repo("b"), make_repo("c"),
-            make_repo("d"), make_repo("e"), make_repo("f"),
+            make_repo("a"),
+            make_repo("b"),
+            make_repo("c"),
+            make_repo("d"),
+            make_repo("e"),
+            make_repo("f"),
         ];
 
         // Down jumps by 3 (one row)
@@ -831,11 +997,15 @@ mod tests {
         state.repos = vec![make_repo("user/myrepo")];
 
         update(&mut state, Message::Select);
-        assert_eq!(state.screen, Screen::RepoDetail {
-            repo_full_name: "user/myrepo".to_string(),
-            section: RepoSection::PRs,
-        });
-        assert!(state.loading.contains("repo_detail"));
+        assert_eq!(
+            state.screen,
+            Screen::RepoDetail {
+                repo_full_name: "user/myrepo".to_string(),
+                section: RepoSection::PRs,
+            }
+        );
+        assert!(state.loading.contains("repo_detail_fast"));
+        assert!(state.loading.contains("repo_detail_stats"));
     }
 
     #[test]
@@ -878,21 +1048,63 @@ mod tests {
         state.detail_focus = DetailFocus::TabBar;
 
         update(&mut state, Message::Right);
-        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Issues, .. }));
+        assert!(matches!(
+            state.screen,
+            Screen::RepoDetail {
+                section: RepoSection::Issues,
+                ..
+            }
+        ));
         update(&mut state, Message::Right);
-        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::CI, .. }));
+        assert!(matches!(
+            state.screen,
+            Screen::RepoDetail {
+                section: RepoSection::CI,
+                ..
+            }
+        ));
         update(&mut state, Message::Right);
-        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Commits, .. }));
+        assert!(matches!(
+            state.screen,
+            Screen::RepoDetail {
+                section: RepoSection::Commits,
+                ..
+            }
+        ));
         update(&mut state, Message::Right);
-        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Info, .. }));
+        assert!(matches!(
+            state.screen,
+            Screen::RepoDetail {
+                section: RepoSection::Info,
+                ..
+            }
+        ));
         update(&mut state, Message::Right);
-        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::PRs, .. }));
+        assert!(matches!(
+            state.screen,
+            Screen::RepoDetail {
+                section: RepoSection::PRs,
+                ..
+            }
+        ));
 
         // Left goes backward
         update(&mut state, Message::Left);
-        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Info, .. }));
+        assert!(matches!(
+            state.screen,
+            Screen::RepoDetail {
+                section: RepoSection::Info,
+                ..
+            }
+        ));
         update(&mut state, Message::Left);
-        assert!(matches!(state.screen, Screen::RepoDetail { section: RepoSection::Commits, .. }));
+        assert!(matches!(
+            state.screen,
+            Screen::RepoDetail {
+                section: RepoSection::Commits,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -925,10 +1137,58 @@ mod tests {
     #[test]
     fn test_toggle_view_mode() {
         let mut state = AppState::new();
+        state.repos = vec![
+            make_repo("alice/public1"),
+            make_repo_private("alice/secret"),
+            make_repo("acme-corp/tool"),
+        ];
+        state.user_info = Some(crate::github::UserInfo {
+            login: "alice".to_string(),
+            avatar_url: String::new(),
+            public_repos: 2,
+            followers: 0,
+            name: None,
+            bio: None,
+            location: None,
+            company: None,
+        });
+
+        assert_eq!(state.repo_filter, RepoFilter::All);
+        update(&mut state, Message::ToggleViewMode);
+        assert_eq!(state.repo_filter, RepoFilter::Public);
+        update(&mut state, Message::ToggleViewMode);
+        assert_eq!(state.repo_filter, RepoFilter::Private);
+    }
+
+    #[test]
+    fn test_toggle_view_mode_cycles_repo_detail_sections() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "user/repo".to_string(),
+            section: RepoSection::PRs,
+        };
+        state.detail_focus = DetailFocus::Content;
+        state.detail_selected = 2;
+
+        update(&mut state, Message::ToggleViewMode);
+        assert!(matches!(
+            state.screen,
+            Screen::RepoDetail {
+                section: RepoSection::Issues,
+                ..
+            }
+        ));
+        assert_eq!(state.detail_selected, 0);
+        assert_eq!(state.detail_focus, DetailFocus::TabBar);
+    }
+
+    #[test]
+    fn test_toggle_list_mode() {
+        let mut state = AppState::new();
         assert_eq!(state.view_mode, ViewMode::Cards);
-        update(&mut state, Message::ToggleViewMode);
+        update(&mut state, Message::ToggleListMode);
         assert_eq!(state.view_mode, ViewMode::List);
-        update(&mut state, Message::ToggleViewMode);
+        update(&mut state, Message::ToggleListMode);
         assert_eq!(state.view_mode, ViewMode::Cards);
     }
 
@@ -982,9 +1242,116 @@ mod tests {
     fn test_search_resets_selection() {
         let mut state = AppState::new();
         state.card_selected = 5;
+        state.search_mode = true;
         update(&mut state, Message::SearchInput('a'));
         assert_eq!(state.card_selected, 0);
-        assert_eq!(state.search_query, "a");
+        assert_eq!(state.search_input, "a");
+    }
+
+    #[test]
+    fn test_filtered_repos_use_live_search_input_while_searching() {
+        let mut state = AppState::new();
+        state.repos = vec![make_repo("alice/alpha"), make_repo("alice/beta")];
+        state.search_query = "alpha".to_string();
+        state.search_mode = true;
+        state.search_input = "beta".to_string();
+
+        let filtered = state.filtered_repos();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].full_name, "alice/beta");
+    }
+
+    #[test]
+    fn test_enter_search_prefills_input() {
+        let mut state = AppState::new();
+        state.search_query = "ghd".to_string();
+
+        update(&mut state, Message::EnterSearch);
+        assert!(state.search_mode);
+        assert_eq!(state.search_input, "ghd");
+    }
+
+    #[test]
+    fn test_confirm_search_applies_query_and_resets_selection() {
+        let mut state = AppState::new();
+        state.search_mode = true;
+        state.search_input = "core".to_string();
+        state.card_selected = 4;
+        state.detail_selected = 3;
+        state.notif_selected = 2;
+
+        update(&mut state, Message::ConfirmSearch);
+
+        assert!(!state.search_mode);
+        assert_eq!(state.search_query, "core");
+        assert_eq!(state.card_selected, 0);
+        assert_eq!(state.detail_selected, 0);
+        assert_eq!(state.notif_selected, 0);
+    }
+
+    #[test]
+    fn test_cancel_search_keeps_applied_query() {
+        let mut state = AppState::new();
+        state.search_query = "old".to_string();
+        state.search_input = "new".to_string();
+        state.search_mode = true;
+
+        update(&mut state, Message::CancelSearch);
+
+        assert!(!state.search_mode);
+        assert_eq!(state.search_query, "old");
+        assert_eq!(state.search_input, "old");
+    }
+
+    #[test]
+    fn test_back_in_search_mode_keeps_applied_query() {
+        let mut state = AppState::new();
+        state.search_query = "repos".to_string();
+        state.search_input = "repos-x".to_string();
+        state.search_mode = true;
+
+        update(&mut state, Message::Back);
+
+        assert!(!state.search_mode);
+        assert_eq!(state.search_query, "repos");
+        assert_eq!(state.search_input, "repos");
+    }
+
+    #[test]
+    fn test_enter_search_only_on_home() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "user/repo".to_string(),
+            section: RepoSection::PRs,
+        };
+
+        update(&mut state, Message::EnterSearch);
+        assert!(!state.search_mode);
+    }
+
+    #[test]
+    fn test_filtered_notifications_ignore_search_query() {
+        let mut state = AppState::new();
+        state.notifications = vec![
+            make_notification("1", true),
+            make_notification_with_title("2", true, "Different title"),
+        ];
+        state.search_query = "does-not-match".to_string();
+
+        assert_eq!(state.filtered_notifications().len(), 2);
+    }
+
+    #[test]
+    fn test_filtered_detail_items_ignore_search_query() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "user/repo".to_string(),
+            section: RepoSection::PRs,
+        };
+        state.repo_prs = vec![make_pr("Fix search flow", "alice")];
+        state.search_query = "does-not-match".to_string();
+
+        assert_eq!(state.filtered_detail_items().len(), 1);
     }
 
     #[test]
@@ -1040,6 +1407,10 @@ mod tests {
             avatar_url: String::new(),
             public_repos: 2,
             followers: 0,
+            name: None,
+            bio: None,
+            location: None,
+            company: None,
         });
         let opts = state.filter_options();
         assert_eq!(opts.len(), 4);
@@ -1056,19 +1427,30 @@ mod tests {
             make_repo("alice/public1"),
             make_repo_private("alice/secret"),
             make_repo("acme-corp/tool"),
+            make_repo_private("acme-corp/secret-tool"),
         ];
+        state.user_info = Some(crate::github::UserInfo {
+            login: "alice".to_string(),
+            avatar_url: String::new(),
+            public_repos: 2,
+            followers: 0,
+            name: None,
+            bio: None,
+            location: None,
+            company: None,
+        });
 
         state.repo_filter = RepoFilter::All;
-        assert_eq!(state.filtered_repos().len(), 3);
+        assert_eq!(state.filtered_repos().len(), 4);
 
         state.repo_filter = RepoFilter::Public;
-        assert_eq!(state.filtered_repos().len(), 2);
+        assert_eq!(state.filtered_repos().len(), 1);
 
         state.repo_filter = RepoFilter::Private;
         assert_eq!(state.filtered_repos().len(), 1);
 
         state.repo_filter = RepoFilter::Org("acme-corp".to_string());
-        assert_eq!(state.filtered_repos().len(), 1);
+        assert_eq!(state.filtered_repos().len(), 2);
     }
 
     #[test]
@@ -1124,6 +1506,10 @@ mod tests {
             avatar_url: String::new(),
             public_repos: 1,
             followers: 0,
+            name: None,
+            bio: None,
+            location: None,
+            company: None,
         });
         // filter_options: All, Public, Private, acme
         update(&mut state, Message::Right);
@@ -1171,6 +1557,8 @@ mod tests {
             is_fork: false,
             is_private: false,
             owner,
+            open_issues_only_count: None,
+            open_prs_count: None,
         }
     }
 
@@ -1184,6 +1572,38 @@ mod tests {
             updated_at: None,
             unread,
             url: Some("https://github.com/user/repo/pull/1".to_string()),
+        }
+    }
+
+    fn make_notification_with_title(id: &str, unread: bool, title: &str) -> Notification {
+        Notification {
+            id: id.to_string(),
+            reason: "subscribed".to_string(),
+            subject_title: title.to_string(),
+            subject_type: "PullRequest".to_string(),
+            repo_full_name: "user/repo".to_string(),
+            updated_at: None,
+            unread,
+            url: Some("https://github.com/user/repo/pull/1".to_string()),
+        }
+    }
+
+    fn make_pr(title: &str, user: &str) -> PrInfo {
+        PrInfo {
+            number: 1,
+            title: title.to_string(),
+            repo_full_name: "user/repo".to_string(),
+            state: "open".to_string(),
+            html_url: "https://github.com/user/repo/pull/1".to_string(),
+            created_at: None,
+            updated_at: None,
+            draft: false,
+            user: user.to_string(),
+            head_ref: "feature".to_string(),
+            base_ref: "main".to_string(),
+            merged: false,
+            additions: 0,
+            deletions: 0,
         }
     }
 }
