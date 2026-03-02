@@ -186,13 +186,16 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                         if parts.len() == 2 {
                                             let (owner, name) = (parts[0], parts[1]);
                                             if let Ok(client) = crate::github::GitHubClient::from_token() {
-                                                let (prs, issues, ci, commits, commit_activity, readme) = tokio::join!(
+                                                let (prs, issues, ci, commits, commit_activity, readme, languages, contributors, code_frequency) = tokio::join!(
                                                     client.fetch_repo_prs(owner, name),
                                                     client.fetch_repo_issues(owner, name),
                                                     client.fetch_repo_ci(owner, name),
                                                     client.fetch_repo_commits(owner, name),
                                                     client.fetch_commit_activity(owner, name),
                                                     client.fetch_readme(owner, name),
+                                                    client.fetch_languages(owner, name),
+                                                    client.fetch_contributors(owner, name),
+                                                    client.fetch_code_frequency(owner, name),
                                                 );
                                                 let _ = tx.send(Message::RepoDetailLoaded {
                                                     repo: format!("{}/{}", owner, name),
@@ -202,6 +205,9 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                                     commits: commits.unwrap_or_default(),
                                                     commit_activity: commit_activity.unwrap_or_default(),
                                                     readme: readme.ok(),
+                                                    languages: languages.unwrap_or_default(),
+                                                    contributors: contributors.unwrap_or_default(),
+                                                    code_frequency: code_frequency.unwrap_or_default(),
                                                 });
                                             }
                                         }

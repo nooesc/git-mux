@@ -6,6 +6,7 @@ use image::DynamicImage;
 use crate::github::ci::WorkflowRun;
 use crate::github::commits::{CommitInfo, WeeklyCommitActivity};
 use crate::github::contributions::ContributionData;
+use crate::github::contributors::ContributorInfo;
 use crate::github::issues::IssueInfo;
 use crate::github::notifications::Notification;
 use crate::github::prs::PrInfo;
@@ -126,6 +127,9 @@ pub struct AppState {
     pub repo_commits: Vec<CommitInfo>,
     pub repo_commit_activity: Vec<WeeklyCommitActivity>,
     pub repo_readme: Option<String>,
+    pub repo_languages: Vec<(String, u64)>,
+    pub repo_contributors: Vec<ContributorInfo>,
+    pub repo_code_frequency: Vec<(i64, i64, i64)>,
 
     // Notifications (global, shown as overlay)
     pub notifications: Vec<Notification>,
@@ -177,6 +181,9 @@ impl AppState {
             repo_commits: Vec::new(),
             repo_commit_activity: Vec::new(),
             repo_readme: None,
+            repo_languages: Vec::new(),
+            repo_contributors: Vec::new(),
+            repo_code_frequency: Vec::new(),
             notifications: Vec::new(),
             notif_selected: 0,
             show_notifications: false,
@@ -343,6 +350,9 @@ pub enum Message {
         commits: Vec<CommitInfo>,
         commit_activity: Vec<WeeklyCommitActivity>,
         readme: Option<String>,
+        languages: Vec<(String, u64)>,
+        contributors: Vec<ContributorInfo>,
+        code_frequency: Vec<(i64, i64, i64)>,
     },
 
     // Actions
@@ -407,7 +417,7 @@ pub fn update(state: &mut AppState, msg: Message) {
             state.notifications = notifs;
             state.loading.remove("notifications");
         }
-        Message::RepoDetailLoaded { repo, prs, issues, ci, commits, commit_activity, readme } => {
+        Message::RepoDetailLoaded { repo, prs, issues, ci, commits, commit_activity, readme, languages, contributors, code_frequency } => {
             // Only apply if we're still on the same repo
             if let Screen::RepoDetail { repo_full_name, .. } = &state.screen {
                 if *repo_full_name == repo {
@@ -417,6 +427,9 @@ pub fn update(state: &mut AppState, msg: Message) {
                     state.repo_commits = commits;
                     state.repo_commit_activity = commit_activity;
                     state.repo_readme = readme;
+                    state.repo_languages = languages;
+                    state.repo_contributors = contributors;
+                    state.repo_code_frequency = code_frequency;
                     state.loading.remove("repo_detail");
                 }
             }
@@ -599,6 +612,9 @@ pub fn update(state: &mut AppState, msg: Message) {
                                 state.repo_commits.clear();
                                 state.repo_commit_activity.clear();
                                 state.repo_readme = None;
+                                state.repo_languages.clear();
+                                state.repo_contributors.clear();
+                                state.repo_code_frequency.clear();
                                 state.loading.insert("repo_detail".to_string());
                                 state.search_query.clear();
                                 state.search_mode = false;
