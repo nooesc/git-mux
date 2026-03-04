@@ -74,9 +74,6 @@ impl Config {
             .join("config.toml")
     }
 
-    pub fn default_view(&self) -> &str {
-        &self.general.default_view
-    }
 }
 
 #[cfg(test)]

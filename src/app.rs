@@ -108,7 +108,6 @@ pub struct AppState {
     // Home screen UI state
     pub card_selected: usize,
     pub view_mode: ViewMode,
-    pub home_scroll: u16,
     pub home_focus: HomeFocus,
     pub repo_filter: RepoFilter,
     pub filter_index: usize,
@@ -170,7 +169,6 @@ impl AppState {
             user_info: None,
             card_selected: 0,
             view_mode: ViewMode::Cards,
-            home_scroll: 0,
             home_focus: HomeFocus::Repos,
             repo_filter: RepoFilter::All,
             filter_index: 0,
@@ -359,7 +357,6 @@ pub enum Message {
     Select,
     Back,
     GoHome,
-    CycleSection,
     ToggleViewMode,
     ToggleListMode,
 
@@ -408,7 +405,6 @@ pub enum Message {
     // UI
     Tick,
     Error(String),
-    DismissError,
     ToggleHelp,
     EnterSearch,
     ConfirmSearch,
@@ -428,11 +424,6 @@ pub fn update(state: &mut AppState, msg: Message) {
             state.error = Some(e);
             state.error_at = Some(Instant::now());
         }
-        Message::DismissError => {
-            state.error = None;
-            state.error_at = None;
-        }
-
         Message::Resize(w, h) => {
             state.term_width = w;
             state.term_height = h;
@@ -784,7 +775,7 @@ pub fn update(state: &mut AppState, msg: Message) {
                         state.detail_selected = 0;
                         state.detail_cache_saved_at = None;
                     }
-                    Screen::Home => {} // already at root
+                    Screen::Home => state.should_quit = true,
                 }
             }
         }
@@ -795,16 +786,6 @@ pub fn update(state: &mut AppState, msg: Message) {
             state.search_mode = false;
             state.search_input = state.search_query.clone();
             state.detail_cache_saved_at = None;
-        }
-
-        Message::CycleSection => {
-            if let Screen::RepoDetail { .. } = &state.screen {
-                if state.detail_focus == DetailFocus::Content {
-                    state.detail_focus = DetailFocus::TabBar;
-                } else {
-                    state.detail_focus = DetailFocus::Content;
-                }
-            }
         }
 
         Message::ToggleViewMode => {
@@ -925,12 +906,11 @@ mod tests {
     }
 
     #[test]
-    fn test_error_and_dismiss() {
+    fn test_error() {
         let mut state = AppState::new();
         update(&mut state, Message::Error("oops".into()));
         assert_eq!(state.error.as_deref(), Some("oops"));
-        update(&mut state, Message::DismissError);
-        assert!(state.error.is_none());
+        assert!(state.error_at.is_some());
     }
 
     #[test]
@@ -1018,24 +998,6 @@ mod tests {
 
         update(&mut state, Message::Back);
         assert_eq!(state.screen, Screen::Home);
-    }
-
-    #[test]
-    fn test_tab_toggles_detail_focus() {
-        let mut state = AppState::new();
-        state.screen = Screen::RepoDetail {
-            repo_full_name: "user/repo".to_string(),
-            section: RepoSection::PRs,
-        };
-        state.detail_focus = DetailFocus::TabBar;
-
-        // Tab from TabBar → Content
-        update(&mut state, Message::CycleSection);
-        assert_eq!(state.detail_focus, DetailFocus::Content);
-
-        // Tab from Content → TabBar
-        update(&mut state, Message::CycleSection);
-        assert_eq!(state.detail_focus, DetailFocus::TabBar);
     }
 
     #[test]
