@@ -748,4 +748,76 @@ mod tests {
         assert_eq!(removed, 0);
         assert!(ws_dir.exists());
     }
+
+    #[test]
+    fn test_full_start_work_flow() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source_dir = tmp.path().join("source");
+        let workspace_dir = tmp.path().join("workspaces");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+
+        // Create a source repo with .env
+        let src_repo = source_dir.join("my-project");
+        std::fs::create_dir_all(&src_repo).unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&src_repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["remote", "add", "origin", "https://github.com/owner/my-project.git"])
+            .current_dir(&src_repo)
+            .output()
+            .unwrap();
+        std::fs::write(src_repo.join(".env"), "SECRET=123").unwrap();
+
+        // Create a bare repo to clone from (simulates GitHub)
+        let bare_repo = tmp.path().join("bare.git");
+        Command::new("git")
+            .args(["init", "--bare", &bare_repo.to_string_lossy()])
+            .output()
+            .unwrap();
+
+        // Find source repo
+        let source_dirs = vec![source_dir.to_string_lossy().to_string()];
+        let found = find_source_repo(&source_dirs, "owner", "my-project");
+        assert!(found.is_some(), "Should find source repo");
+
+        // Clone from bare repo
+        let ws = WorkspaceOps::new(workspace_dir.to_string_lossy().to_string());
+        let ws_dir = ws
+            .clone_repo(
+                &bare_repo.to_string_lossy(),
+                "owner",
+                "my-project",
+                "issue-1-test",
+            )
+            .unwrap();
+        assert!(ws_dir.exists(), "Workspace directory should exist after clone");
+
+        // Copy env files
+        let copied = copy_env_files(&src_repo, &ws_dir).unwrap();
+        assert_eq!(copied, 1, "Should copy 1 .env file");
+        assert!(ws_dir.join(".env").exists(), ".env should be in workspace");
+        assert_eq!(
+            std::fs::read_to_string(ws_dir.join(".env")).unwrap(),
+            "SECRET=123"
+        );
+
+        // Create branch
+        WorkspaceOps::checkout_new_branch(&ws_dir, "issue-1-test").unwrap();
+
+        // Verify branch
+        let output = Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(&ws_dir)
+            .output()
+            .unwrap();
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(branch, "issue-1-test");
+
+        // Verify idempotency — workspace_exists should return true
+        assert!(ws.workspace_exists("owner", "my-project", "issue-1-test"));
+    }
 }
