@@ -92,6 +92,19 @@ pub enum RepoFilter {
     Org(String),
 }
 
+#[derive(Debug, Clone)]
+pub struct ActionMenuState {
+    pub selected: usize,
+    /// Whether the "Start work" option is available (only on Issues/PRs tabs)
+    pub has_start_work: bool,
+}
+
+impl ActionMenuState {
+    pub fn option_count(&self) -> usize {
+        if self.has_start_work { 2 } else { 1 }
+    }
+}
+
 // ── App State ──
 
 pub struct AppState {
@@ -150,8 +163,14 @@ pub struct AppState {
     pub search_query: String,
     pub search_input: String,
 
+    // Action menu overlay
+    pub action_menu: Option<ActionMenuState>,
+
     // Open-in-browser
     pub pending_open_url: Option<String>,
+
+    // Start work (consumed by event loop)
+    pub pending_start_work: bool,
 
     // Terminal dimensions (updated on resize)
     pub term_width: u16,
@@ -196,7 +215,9 @@ impl AppState {
             search_mode: false,
             search_query: String::new(),
             search_input: String::new(),
+            action_menu: None,
             pending_open_url: None,
+            pending_start_work: false,
             term_width: 120,
             term_height: 40,
         }
@@ -433,6 +454,13 @@ pub enum Message {
     MarkNotifRead(String),
     MarkAllNotifsRead,
     ForceRefresh,
+
+    // Action menu
+    ShowActionMenu,
+    ActionMenuSelect,
+    ActionMenuDismiss,
+    ActionMenuUp,
+    ActionMenuDown,
 
     // UI
     Tick,
@@ -943,6 +971,61 @@ pub fn update(state: &mut AppState, msg: Message) {
                 if at.elapsed().as_secs() > 10 {
                     state.error = None;
                     state.error_at = None;
+                }
+            }
+        }
+
+        // ── Action menu ──
+        Message::ShowActionMenu => {
+            let has_start_work = matches!(
+                &state.screen,
+                Screen::RepoDetail { section: RepoSection::PRs | RepoSection::Issues, .. }
+            );
+            state.action_menu = Some(ActionMenuState { selected: 0, has_start_work });
+        }
+
+        Message::ActionMenuDismiss => {
+            state.action_menu = None;
+        }
+
+        Message::ActionMenuUp => {
+            if let Some(ref mut menu) = state.action_menu {
+                if menu.selected > 0 {
+                    menu.selected -= 1;
+                }
+            }
+        }
+
+        Message::ActionMenuDown => {
+            if let Some(ref mut menu) = state.action_menu {
+                if menu.selected + 1 < menu.option_count() {
+                    menu.selected += 1;
+                }
+            }
+        }
+
+        Message::ActionMenuSelect => {
+            if let Some(menu) = state.action_menu.take() {
+                match menu.selected {
+                    0 => {
+                        // Open in browser — replicate existing Select behavior for detail items
+                        let items = state.filtered_detail_items();
+                        if let Some(item) = items.get(state.detail_selected) {
+                            let url = match item {
+                                DetailItem::Pr(pr) => &pr.html_url,
+                                DetailItem::Issue(i) => &i.html_url,
+                                DetailItem::Ci(r) => &r.html_url,
+                                DetailItem::Commit(c) => &c.html_url,
+                                DetailItem::SectionHeader(_) => return,
+                            };
+                            state.pending_open_url = Some(url.clone());
+                        }
+                    }
+                    1 => {
+                        // Start work — set flag for main.rs to pick up
+                        state.pending_start_work = true;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1561,6 +1644,101 @@ mod tests {
 
         update(&mut state, Message::Select);
         assert_eq!(state.home_focus, HomeFocus::Repos);
+    }
+
+    #[test]
+    fn test_action_menu_show_and_dismiss() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "owner/repo".to_string(),
+            section: RepoSection::Issues,
+        };
+        state.detail_focus = DetailFocus::Content;
+
+        update(&mut state, Message::ShowActionMenu);
+        assert!(state.action_menu.is_some());
+        assert_eq!(state.action_menu.as_ref().unwrap().selected, 0);
+        assert!(state.action_menu.as_ref().unwrap().has_start_work);
+
+        update(&mut state, Message::ActionMenuDismiss);
+        assert!(state.action_menu.is_none());
+    }
+
+    #[test]
+    fn test_action_menu_navigation() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "owner/repo".to_string(),
+            section: RepoSection::PRs,
+        };
+
+        update(&mut state, Message::ShowActionMenu);
+        assert_eq!(state.action_menu.as_ref().unwrap().selected, 0);
+
+        update(&mut state, Message::ActionMenuDown);
+        assert_eq!(state.action_menu.as_ref().unwrap().selected, 1);
+
+        // Can't go beyond last option
+        update(&mut state, Message::ActionMenuDown);
+        assert_eq!(state.action_menu.as_ref().unwrap().selected, 1);
+
+        update(&mut state, Message::ActionMenuUp);
+        assert_eq!(state.action_menu.as_ref().unwrap().selected, 0);
+
+        // Can't go below 0
+        update(&mut state, Message::ActionMenuUp);
+        assert_eq!(state.action_menu.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn test_action_menu_no_start_work_on_ci() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "owner/repo".to_string(),
+            section: RepoSection::CI,
+        };
+
+        update(&mut state, Message::ShowActionMenu);
+        assert!(!state.action_menu.as_ref().unwrap().has_start_work);
+        assert_eq!(state.action_menu.as_ref().unwrap().option_count(), 1);
+    }
+
+    #[test]
+    fn test_action_menu_open_in_browser() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "owner/repo".to_string(),
+            section: RepoSection::Issues,
+        };
+        state.detail_focus = DetailFocus::Content;
+        state.repo_issues.push(IssueInfo {
+            number: 1, title: "test".to_string(), state: "open".to_string(),
+            user: "u".to_string(), labels: vec![], created_at: None,
+            updated_at: None, html_url: "https://github.com/test".to_string(), comments: 0,
+        });
+        // detail_selected = 1 to skip the section header at index 0
+        state.detail_selected = 1;
+
+        update(&mut state, Message::ShowActionMenu);
+        // Selected = 0 means "Open in browser"
+        update(&mut state, Message::ActionMenuSelect);
+        assert!(state.action_menu.is_none());
+        assert_eq!(state.pending_open_url, Some("https://github.com/test".to_string()));
+    }
+
+    #[test]
+    fn test_action_menu_start_work() {
+        let mut state = AppState::new();
+        state.screen = Screen::RepoDetail {
+            repo_full_name: "owner/repo".to_string(),
+            section: RepoSection::Issues,
+        };
+
+        update(&mut state, Message::ShowActionMenu);
+        update(&mut state, Message::ActionMenuDown); // Move to "Start work"
+        update(&mut state, Message::ActionMenuSelect);
+        assert!(state.action_menu.is_none());
+        assert!(state.pending_start_work);
     }
 
     // ── Test helpers ──
