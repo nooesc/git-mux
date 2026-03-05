@@ -172,6 +172,11 @@ pub struct AppState {
     // Start work (consumed by event loop)
     pub pending_start_work: bool,
 
+    // Workspace
+    pub workspace_status: Option<String>,
+    pub branch_input: Option<String>,
+    pub branch_input_mode: bool,
+
     // Terminal dimensions (updated on resize)
     pub term_width: u16,
     pub term_height: u16,
@@ -218,6 +223,9 @@ impl AppState {
             action_menu: None,
             pending_open_url: None,
             pending_start_work: false,
+            workspace_status: None,
+            branch_input: None,
+            branch_input_mode: false,
             term_width: 120,
             term_height: 40,
         }
@@ -461,6 +469,15 @@ pub enum Message {
     ActionMenuDismiss,
     ActionMenuUp,
     ActionMenuDown,
+
+    // Workspace
+    StartBranchInput,
+    BranchInputChar(char),
+    BranchInputBackspace,
+    BranchInputSubmit,
+    BranchInputCancel,
+    WorkspaceReady(String),
+    WorkspaceError(String),
 
     // UI
     Tick,
@@ -1028,6 +1045,39 @@ pub fn update(state: &mut AppState, msg: Message) {
                     _ => {}
                 }
             }
+        }
+
+        // ── Workspace ──
+        Message::StartBranchInput => {
+            state.branch_input = Some(String::new());
+            state.branch_input_mode = true;
+        }
+        Message::BranchInputChar(c) => {
+            if let Some(ref mut input) = state.branch_input {
+                input.push(c);
+            }
+        }
+        Message::BranchInputBackspace => {
+            if let Some(ref mut input) = state.branch_input {
+                input.pop();
+            }
+        }
+        Message::BranchInputCancel => {
+            state.branch_input = None;
+            state.branch_input_mode = false;
+        }
+        Message::BranchInputSubmit => {
+            state.branch_input_mode = false;
+        }
+        Message::WorkspaceReady(path) => {
+            state.workspace_status = Some(format!("Workspace ready: {}", path));
+            state.pending_start_work = false;
+        }
+        Message::WorkspaceError(e) => {
+            state.error = Some(format!("Workspace error: {}", e));
+            state.error_at = Some(Instant::now());
+            state.workspace_status = None;
+            state.pending_start_work = false;
         }
 
         Message::ForceRefresh => {}

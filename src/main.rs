@@ -261,6 +261,22 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                         }
                         _ => None,
                     }
+                } else if state.branch_input_mode {
+                    match key.code {
+                        KeyCode::Esc => Some(Message::BranchInputCancel),
+                        KeyCode::Enter => Some(Message::BranchInputSubmit),
+                        KeyCode::Backspace => Some(Message::BranchInputBackspace),
+                        KeyCode::Char(c) => Some(Message::BranchInputChar(c)),
+                        _ => None,
+                    }
+                } else if state.action_menu.is_some() {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => Some(Message::ActionMenuDismiss),
+                        KeyCode::Enter => Some(Message::ActionMenuSelect),
+                        KeyCode::Char('j') | KeyCode::Down => Some(Message::ActionMenuDown),
+                        KeyCode::Char('k') | KeyCode::Up => Some(Message::ActionMenuUp),
+                        _ => None,
+                    }
                 } else {
                     match key.code {
                         KeyCode::Char('q') => Some(Message::Back),
@@ -421,7 +437,16 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                     }
                                 });
                             }
-                            Some(Message::Select)
+                            // On Issues/PRs tab in Content focus -> show action menu
+                            if let Screen::RepoDetail { section: app::RepoSection::PRs | app::RepoSection::Issues, .. } = &state.screen {
+                                if state.detail_focus == app::DetailFocus::Content {
+                                    Some(Message::ShowActionMenu)
+                                } else {
+                                    Some(Message::Select)
+                                }
+                            } else {
+                                Some(Message::Select)
+                            }
                         }
 
                         KeyCode::Esc => Some(Message::Quit),
@@ -497,6 +522,16 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                 Some(Message::ForceRefresh)
                             }
                         },
+
+                        KeyCode::Char('w') => {
+                            if state.screen == Screen::Home
+                                && state.home_focus == app::HomeFocus::Repos
+                            {
+                                Some(Message::StartBranchInput)
+                            } else {
+                                None
+                            }
+                        }
 
                         _ => None,
                     }
