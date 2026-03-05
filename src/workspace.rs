@@ -294,6 +294,66 @@ impl WorkspaceOps {
         }
         Ok(())
     }
+
+    /// Clean up workspaces older than `days` that are clean and have no active tmux panes.
+    /// Returns the number of workspaces removed.
+    pub fn cleanup_old_workspaces(&self, days: u64) -> Result<u32> {
+        if days == 0 {
+            return Ok(0);
+        }
+
+        let expanded = shellexpand::tilde(&self.base_dir);
+        let base = PathBuf::from(expanded.as_ref());
+        if !base.is_dir() {
+            return Ok(0);
+        }
+
+        let cutoff = std::time::SystemTime::now()
+            - std::time::Duration::from_secs(days * 24 * 60 * 60);
+
+        // Get all tmux pane cwds for safety check
+        let active_paths = get_tmux_pane_paths();
+
+        let mut removed = 0;
+
+        // Walk owner/repo/workspace structure
+        for owner_entry in std::fs::read_dir(&base)?.flatten() {
+            if !owner_entry.path().is_dir() {
+                continue;
+            }
+            for repo_entry in std::fs::read_dir(owner_entry.path())?.flatten() {
+                if !repo_entry.path().is_dir() {
+                    continue;
+                }
+                for ws_entry in std::fs::read_dir(repo_entry.path())?.flatten() {
+                    let ws_path = ws_entry.path();
+                    if !ws_path.is_dir() {
+                        continue;
+                    }
+
+                    // Skip if tmux pane is using this directory
+                    let ws_str = ws_path.to_string_lossy().to_string();
+                    if active_paths.contains(&ws_str) {
+                        continue;
+                    }
+
+                    // Skip if workspace has uncommitted changes
+                    if is_workspace_dirty(&ws_path) {
+                        continue;
+                    }
+
+                    // Check most recent file modification time (recursive)
+                    if let Some(latest) = most_recent_mtime(&ws_path) {
+                        if latest < cutoff {
+                            std::fs::remove_dir_all(&ws_path)?;
+                            removed += 1;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(removed)
+    }
 }
 
 /// Check if running inside tmux.
@@ -346,6 +406,65 @@ pub fn open_tmux_window(ws_dir: &Path, name: &str) -> Result<()> {
         bail!("tmux new-window failed: {}", stderr.trim());
     }
     Ok(())
+}
+
+/// Get all tmux pane current working directories.
+fn get_tmux_pane_paths() -> Vec<String> {
+    let output = Command::new("tmux")
+        .args(["list-panes", "-a", "-F", "#{pane_current_path}"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(String::from)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Check if a git workspace has uncommitted changes.
+fn is_workspace_dirty(dir: &Path) -> bool {
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(dir)
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => !String::from_utf8_lossy(&o.stdout).trim().is_empty(),
+        _ => true, // If we can't determine, treat as dirty (safe default)
+    }
+}
+
+/// Find the most recently modified file in a directory tree.
+fn most_recent_mtime(dir: &Path) -> Option<std::time::SystemTime> {
+    let mut latest = None;
+    walk_dir_for_mtime(dir, &mut latest);
+    latest
+}
+
+/// Simple recursive directory walker for finding most recent mtime (skips .git for performance).
+fn walk_dir_for_mtime(dir: &Path, latest: &mut Option<std::time::SystemTime>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = entry.file_name();
+                if name == ".git" {
+                    continue;
+                }
+                walk_dir_for_mtime(&path, latest);
+            } else if let Ok(meta) = path.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    *latest = Some(match *latest {
+                        Some(prev) if modified > prev => modified,
+                        Some(prev) => prev,
+                        None => modified,
+                    });
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -586,5 +705,47 @@ mod tests {
     fn test_is_inside_tmux() {
         // Just verify it returns a bool without panicking
         let _ = is_inside_tmux();
+    }
+
+    #[test]
+    fn test_cleanup_skips_when_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = WorkspaceOps::new(tmp.path().to_string_lossy().to_string());
+        let removed = ws.cleanup_old_workspaces(0).unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn test_cleanup_skips_dirty_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp.path().join("owner").join("repo").join("feature");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        // Init git repo with uncommitted changes
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&ws_dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@test.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "init",
+            ])
+            .current_dir(&ws_dir)
+            .output()
+            .unwrap();
+        std::fs::write(ws_dir.join("dirty.txt"), "uncommitted").unwrap();
+
+        let ws = WorkspaceOps::new(tmp.path().to_string_lossy().to_string());
+        let removed = ws.cleanup_old_workspaces(1).unwrap();
+        assert_eq!(removed, 0);
+        assert!(ws_dir.exists());
     }
 }
