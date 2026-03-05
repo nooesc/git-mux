@@ -191,6 +191,163 @@ pub fn clone_url(source_remote: Option<&str>, owner: &str, repo: &str) -> String
     }
 }
 
+/// Central struct for workspace operations.
+pub struct WorkspaceOps {
+    pub base_dir: String,
+}
+
+impl WorkspaceOps {
+    pub fn new(base_dir: String) -> Self {
+        Self { base_dir }
+    }
+
+    /// Get the workspace directory path for a given owner/repo/slug.
+    pub fn workspace_dir(&self, owner: &str, repo: &str, dir_slug: &str) -> PathBuf {
+        let expanded = shellexpand::tilde(&self.base_dir);
+        PathBuf::from(expanded.as_ref())
+            .join(owner)
+            .join(repo)
+            .join(dir_slug)
+    }
+
+    /// Check if a workspace already exists.
+    pub fn workspace_exists(&self, owner: &str, repo: &str, dir_slug: &str) -> bool {
+        self.workspace_dir(owner, repo, dir_slug).is_dir()
+    }
+
+    /// Clone a repo into the workspace directory.
+    pub fn clone_repo(
+        &self,
+        url: &str,
+        owner: &str,
+        repo: &str,
+        dir_slug: &str,
+    ) -> Result<PathBuf> {
+        let ws_dir = self.workspace_dir(owner, repo, dir_slug);
+        if let Some(parent) = ws_dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let output = Command::new("git")
+            .args(["clone", url, &ws_dir.to_string_lossy()])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("git clone failed: {}", stderr.trim());
+        }
+        Ok(ws_dir)
+    }
+
+    /// Create and checkout a new branch in the workspace.
+    pub fn checkout_new_branch(ws_dir: &Path, branch: &str) -> Result<()> {
+        let output = Command::new("git")
+            .args(["checkout", "-b", branch])
+            .current_dir(ws_dir)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("git checkout -b failed: {}", stderr.trim());
+        }
+        Ok(())
+    }
+
+    /// Fetch and checkout a PR by number.
+    pub fn checkout_pr(ws_dir: &Path, pr_number: u64, local_branch: &str) -> Result<()> {
+        let output = Command::new("git")
+            .args([
+                "fetch",
+                "origin",
+                &format!("pull/{}/head:{}", pr_number, local_branch),
+            ])
+            .current_dir(ws_dir)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("git fetch PR failed: {}", stderr.trim());
+        }
+
+        let output = Command::new("git")
+            .args(["checkout", local_branch])
+            .current_dir(ws_dir)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("git checkout failed: {}", stderr.trim());
+        }
+        Ok(())
+    }
+
+    /// Fetch latest in an existing workspace.
+    pub fn fetch_latest(ws_dir: &Path) -> Result<()> {
+        let output = Command::new("git")
+            .args(["fetch", "--all"])
+            .current_dir(ws_dir)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("git fetch failed: {}", stderr.trim());
+        }
+        Ok(())
+    }
+}
+
+/// Check if running inside tmux.
+pub fn is_inside_tmux() -> bool {
+    std::env::var("TMUX").is_ok()
+}
+
+/// Open a tmux window for a workspace directory.
+/// If a pane with this cwd already exists, select that window instead.
+pub fn open_tmux_window(ws_dir: &Path, name: &str) -> Result<()> {
+    // Check if a pane already has this cwd
+    let output = Command::new("tmux")
+        .args([
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name}:#{window_index} #{pane_current_path}",
+        ])
+        .output()?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let ws_str = ws_dir.to_string_lossy();
+        for line in stdout.lines() {
+            if let Some((target, path)) = line.split_once(' ') {
+                if path == ws_str.as_ref() {
+                    // Select existing window
+                    let _ = Command::new("tmux")
+                        .args(["select-window", "-t", target])
+                        .output();
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Create new window
+    let output = Command::new("tmux")
+        .args([
+            "new-window",
+            "-n",
+            name,
+            "-c",
+            &ws_dir.to_string_lossy(),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("tmux new-window failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +564,27 @@ mod tests {
             clone_url(None, "owner", "repo"),
             "https://github.com/owner/repo.git"
         );
+    }
+
+    #[test]
+    fn test_workspace_path() {
+        let ws = WorkspaceOps::new("/tmp/workspaces".to_string());
+        let path = ws.workspace_dir("owner", "repo", "issue-123-fix-it");
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/workspaces/owner/repo/issue-123-fix-it")
+        );
+    }
+
+    #[test]
+    fn test_workspace_exists_false() {
+        let ws = WorkspaceOps::new("/tmp/nonexistent-ws-test".to_string());
+        assert!(!ws.workspace_exists("owner", "repo", "nope"));
+    }
+
+    #[test]
+    fn test_is_inside_tmux() {
+        // Just verify it returns a bool without panicking
+        let _ = is_inside_tmux();
     }
 }
