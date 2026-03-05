@@ -4,6 +4,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::app::{AppState, HomeFocus, RepoFilter, ViewMode};
@@ -27,11 +28,13 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         render_profile_and_graph(frame, top_area, state);
     } else {
         // Just render the heatmap without the avatar/profile panel
+        let streaks = calculate_streaks(&state.contributions.days);
         render_heatmap(
             frame,
             top_area,
             &state.contributions.days,
             state.contributions.total,
+            streaks,
         );
     }
 
@@ -55,14 +58,16 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 fn render_profile_and_graph(frame: &mut Frame, area: Rect, state: &AppState) {
-    // Three columns: info | avatar | contribution graph
+    // Four columns: info | avatar | contribution graph | stats
     let avatar_width = 30u16;
     let info_width = 20u16;
+    let stats_width = 28u16;
 
-    let [info_area, avatar_area, graph_area] = Layout::horizontal([
+    let [info_area, avatar_area, graph_area, stats_area] = Layout::horizontal([
         Constraint::Length(info_width),
         Constraint::Length(avatar_width),
         Constraint::Fill(1),
+        Constraint::Length(stats_width),
     ])
     .areas(area);
 
@@ -182,12 +187,198 @@ fn render_profile_and_graph(frame: &mut Frame, area: Rect, state: &AppState) {
     let graph_inner = graph_block.inner(graph_area);
     frame.render_widget(graph_block, graph_area);
 
+    let streaks = calculate_streaks(&state.contributions.days);
+
     render_heatmap(
         frame,
         graph_inner,
         &state.contributions.days,
         state.contributions.total,
+        streaks,
     );
+
+    // ── Stats panel ──
+    render_stats_panel(frame, stats_area, state, streaks);
+}
+
+fn render_stats_panel(frame: &mut Frame, area: Rect, state: &AppState, streaks: (u32, u32)) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Span::styled(" Stats ", Style::default().fg(Color::Cyan)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    let days = &state.contributions.days;
+
+    // ── Streak + activity ──
+    let (current_streak, longest_streak) = streaks;
+    if current_streak > 0 {
+        lines.push(Line::from(vec![
+            Span::styled(" \u{1f525} ", Style::default()),
+            Span::styled(
+                format!("{} day streak", current_streak),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(Span::styled(
+            " No active streak",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        format!("    longest: {} days", longest_streak),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // Avg contributions/day + most active day
+    let avg = if !days.is_empty() {
+        days.iter().map(|d| d.count as f64).sum::<f64>() / days.len() as f64
+    } else {
+        0.0
+    };
+    let best_day = most_active_weekday(days);
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!(" \u{2300}  {:.1}/day", avg),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            format!("  best: {}", best_day),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+
+    // ── Separator ──
+    lines.push(Line::from(""));
+
+    // ── Top languages ──
+    let lang_counts = language_stats(&state.repos);
+    let bar_width = 10;
+    let total_lang: usize = lang_counts.iter().map(|(_, c)| *c).sum();
+    for (lang, count) in lang_counts.iter().take(4) {
+        let pct = if total_lang > 0 {
+            (*count as f64 / total_lang as f64 * 100.0) as u16
+        } else {
+            0
+        };
+        let filled = (pct as usize * bar_width / 100).max(if *count > 0 { 1 } else { 0 });
+        let empty = bar_width - filled;
+        let lang_name = truncate_ellipsis(lang, 8);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {:<8} ", lang_name),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled(
+                "\u{2588}".repeat(filled),
+                Style::default().fg(lang_color(lang)),
+            ),
+            Span::styled(
+                "\u{2591}".repeat(empty),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format!(" {:>2}%", pct),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+
+    // ── Separator ──
+    if lines.len() < inner.height as usize {
+        lines.push(Line::from(""));
+    }
+
+    // ── Aggregate repo stats ──
+    if lines.len() < inner.height as usize {
+        let total_forks: u32 = state.repos.iter().map(|r| r.forks_count).sum();
+        let total_issues: u32 = state
+            .repos
+            .iter()
+            .map(|r| r.effective_issue_count())
+            .sum();
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" \u{2442} {} forks", total_forks),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                format!("! {} issues", total_issues),
+                Style::default().fg(Color::Red),
+            ),
+        ]));
+    }
+
+    lines.truncate(inner.height as usize);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn most_active_weekday(days: &[ContributionDay]) -> &'static str {
+    let mut totals = [0u64; 7];
+    for day in days {
+        let wd = day.date.weekday().num_days_from_monday() as usize;
+        totals[wd] += day.count as u64;
+    }
+    let names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let best = totals
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, v)| *v)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    names[best]
+}
+
+fn language_stats(repos: &[RepoInfo]) -> Vec<(String, usize)> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for repo in repos {
+        if let Some(ref lang) = repo.language {
+            *counts.entry(lang.clone()).or_insert(0) += 1;
+        }
+    }
+    let mut sorted: Vec<(String, usize)> = counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // If more than 4, collapse the rest into "Other"
+    if sorted.len() > 4 {
+        let top3: Vec<(String, usize)> = sorted.drain(..3).collect();
+        let other: usize = sorted.iter().map(|(_, c)| c).sum();
+        let mut result = top3;
+        result.push(("Other".to_string(), other));
+        result
+    } else {
+        sorted
+    }
+}
+
+/// Map GitHub API language names to their brand colors.
+fn lang_color(lang: &str) -> Color {
+    match lang {
+        "Rust" => Color::Rgb(222, 165, 132),
+        "TypeScript" => Color::Rgb(49, 120, 198),
+        "JavaScript" => Color::Rgb(241, 224, 90),
+        "Python" => Color::Rgb(53, 114, 165),
+        "Go" => Color::Rgb(0, 173, 216),
+        "Ruby" => Color::Rgb(204, 52, 45),
+        "Java" => Color::Rgb(176, 114, 25),
+        "C++" => Color::Rgb(243, 75, 125),
+        "C" => Color::Rgb(85, 85, 85),
+        "C#" => Color::Rgb(23, 134, 0),
+        "Swift" => Color::Rgb(240, 81, 56),
+        "Kotlin" => Color::Rgb(169, 123, 255),
+        "Shell" => Color::Rgb(137, 224, 81),
+        "HTML" => Color::Rgb(227, 76, 38),
+        "CSS" => Color::Rgb(86, 61, 124),
+        "Vue" => Color::Rgb(65, 184, 131),
+        "Svelte" => Color::Rgb(255, 62, 0),
+        "Lua" => Color::Rgb(0, 0, 128),
+        "Zig" => Color::Rgb(236, 167, 44),
+        _ => Color::Rgb(150, 150, 150),
+    }
 }
 
 #[derive(Clone)]
@@ -308,7 +499,7 @@ fn render_filter_bar(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
 }
 
-fn render_heatmap(frame: &mut Frame, area: Rect, days: &[ContributionDay], total: u32) {
+fn render_heatmap(frame: &mut Frame, area: Rect, days: &[ContributionDay], total: u32, streaks: (u32, u32)) {
     if days.is_empty() {
         let p =
             Paragraph::new("Loading contributions...").style(Style::default().fg(Color::DarkGray));
@@ -395,7 +586,7 @@ fn render_heatmap(frame: &mut Frame, area: Rect, days: &[ContributionDay], total
     }
 
     // Stats line
-    let (current_streak, _longest_streak) = calculate_streaks(days);
+    let (current_streak, _) = streaks;
     let streak_text = if current_streak > 0 {
         format!(
             "  {} contributions · {} day streak 🔥",
@@ -546,9 +737,7 @@ fn render_card(frame: &mut Frame, area: Rect, repo: &RepoInfo, selected: bool) {
     let visibility = if repo.is_private { "🔒 " } else { "   " };
     let stars = format!("★ {}", compact_u32(repo.stargazers_count));
     let forks = format!("⑂ {}", compact_u32(repo.forks_count));
-    let issues = repo
-        .open_issues_only_count
-        .unwrap_or(repo.open_issues_count);
+    let issues = repo.effective_issue_count();
     let prs = repo
         .open_prs_count
         .map(compact_u32)
@@ -707,10 +896,7 @@ fn render_list_view(
             let name = truncate_ellipsis(raw_name, name_width);
             let stars = compact_u32(repo.stargazers_count);
             let forks = compact_u32(repo.forks_count);
-            let issues = compact_u32(
-                repo.open_issues_only_count
-                    .unwrap_or(repo.open_issues_count),
-            );
+            let issues = compact_u32(repo.effective_issue_count());
             let prs = repo
                 .open_prs_count
                 .map(compact_u32)

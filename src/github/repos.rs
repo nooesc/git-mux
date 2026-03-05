@@ -24,6 +24,13 @@ pub struct RepoInfo {
     pub open_prs_count: Option<u32>,
 }
 
+impl RepoInfo {
+    pub fn effective_issue_count(&self) -> u32 {
+        self.open_issues_only_count
+            .unwrap_or(self.open_issues_count)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoOpenCounts {
     pub full_name: String,
