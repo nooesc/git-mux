@@ -278,19 +278,51 @@ impl AppState {
 
     /// Get repo detail items filtered by search query.
     pub fn filtered_detail_items(&self) -> Vec<DetailItem<'_>> {
-        let items: Vec<DetailItem> = match &self.screen {
+        match &self.screen {
             Screen::RepoDetail {
                 section: RepoSection::PRs,
                 ..
-            } => self.repo_prs.iter().map(|pr| DetailItem::Pr(pr)).collect(),
+            } => {
+                let mut open: Vec<_> = self.repo_prs.iter().filter(|p| p.state == "open" && !p.draft).collect();
+                let mut draft: Vec<_> = self.repo_prs.iter().filter(|p| p.draft && p.state == "open").collect();
+                let mut merged: Vec<_> = self.repo_prs.iter().filter(|p| p.merged).collect();
+                let mut closed: Vec<_> = self.repo_prs.iter().filter(|p| p.state == "closed" && !p.merged).collect();
+
+                let sort_by_updated = |a: &&PrInfo, b: &&PrInfo| b.updated_at.cmp(&a.updated_at);
+                open.sort_by(sort_by_updated);
+                draft.sort_by(sort_by_updated);
+                merged.sort_by(sort_by_updated);
+                closed.sort_by(sort_by_updated);
+
+                let mut items = Vec::new();
+                for (label, group) in [("Open", open), ("Draft", draft), ("Merged", merged), ("Closed", closed)] {
+                    if !group.is_empty() {
+                        items.push(DetailItem::SectionHeader(format!("{} ({})", label, group.len())));
+                        items.extend(group.into_iter().map(DetailItem::Pr));
+                    }
+                }
+                items
+            }
             Screen::RepoDetail {
                 section: RepoSection::Issues,
                 ..
-            } => self
-                .repo_issues
-                .iter()
-                .map(|i| DetailItem::Issue(i))
-                .collect(),
+            } => {
+                let mut open: Vec<_> = self.repo_issues.iter().filter(|i| i.state == "open").collect();
+                let mut closed: Vec<_> = self.repo_issues.iter().filter(|i| i.state == "closed").collect();
+
+                let sort_by_updated = |a: &&IssueInfo, b: &&IssueInfo| b.updated_at.cmp(&a.updated_at);
+                open.sort_by(sort_by_updated);
+                closed.sort_by(sort_by_updated);
+
+                let mut items = Vec::new();
+                for (label, group) in [("Open", open), ("Closed", closed)] {
+                    if !group.is_empty() {
+                        items.push(DetailItem::SectionHeader(format!("{} ({})", label, group.len())));
+                        items.extend(group.into_iter().map(DetailItem::Issue));
+                    }
+                }
+                items
+            }
             Screen::RepoDetail {
                 section: RepoSection::CI,
                 ..
@@ -308,8 +340,7 @@ impl AppState {
                 ..
             } => Vec::new(),
             _ => Vec::new(),
-        };
-        items
+        }
     }
 
     /// Filtered notifications.
@@ -342,6 +373,7 @@ pub enum DetailItem<'a> {
     Issue(&'a IssueInfo),
     Ci(&'a WorkflowRun),
     Commit(&'a CommitInfo),
+    SectionHeader(String),
 }
 
 // ── Messages ──
@@ -598,7 +630,18 @@ pub fn update(state: &mut AppState, msg: Message) {
                         } else if state.detail_selected == 0 {
                             state.detail_focus = DetailFocus::TabBar;
                         } else {
-                            state.detail_selected -= 1;
+                            let prev = state.detail_selected - 1;
+                            let prev_is_header = matches!(
+                                state.filtered_detail_items().get(prev),
+                                Some(DetailItem::SectionHeader(_))
+                            );
+                            if prev_is_header && prev == 0 {
+                                state.detail_focus = DetailFocus::TabBar;
+                            } else if prev_is_header {
+                                state.detail_selected = prev - 1;
+                            } else {
+                                state.detail_selected = prev;
+                            }
                         }
                     }
                 }
@@ -636,12 +679,25 @@ pub fn update(state: &mut AppState, msg: Message) {
                     Screen::RepoDetail { section, .. } => {
                         if state.detail_focus == DetailFocus::TabBar {
                             state.detail_focus = DetailFocus::Content;
+                            // Skip leading section header
+                            let cur_is_header = matches!(
+                                state.filtered_detail_items().get(state.detail_selected),
+                                Some(DetailItem::SectionHeader(_))
+                            );
+                            if cur_is_header {
+                                state.detail_selected += 1;
+                            }
                         } else if *section == RepoSection::Info {
                             state.detail_selected += 1;
                         } else {
-                            let len = state.filtered_detail_items().len();
-                            if state.detail_selected < len.saturating_sub(1) {
-                                state.detail_selected += 1;
+                            let items = state.filtered_detail_items();
+                            let len = items.len();
+                            let next = state.detail_selected + 1;
+                            let next_is_header = matches!(items.get(next), Some(DetailItem::SectionHeader(_)));
+                            let skip_target = if next_is_header { next + 1 } else { next };
+                            drop(items);
+                            if skip_target < len {
+                                state.detail_selected = skip_target;
                             }
                         }
                     }
@@ -742,6 +798,14 @@ pub fn update(state: &mut AppState, msg: Message) {
                     Screen::RepoDetail { .. } => {
                         if state.detail_focus == DetailFocus::TabBar {
                             state.detail_focus = DetailFocus::Content;
+                            // Skip leading section header
+                            let cur_is_header = matches!(
+                                state.filtered_detail_items().get(state.detail_selected),
+                                Some(DetailItem::SectionHeader(_))
+                            );
+                            if cur_is_header {
+                                state.detail_selected += 1;
+                            }
                             return;
                         }
                         // Open item in browser
@@ -752,6 +816,7 @@ pub fn update(state: &mut AppState, msg: Message) {
                                 DetailItem::Issue(i) => &i.html_url,
                                 DetailItem::Ci(r) => &r.html_url,
                                 DetailItem::Commit(c) => &c.html_url,
+                                DetailItem::SectionHeader(_) => return,
                             };
                             state.pending_open_url = Some(url.clone());
                         }
@@ -1313,7 +1378,8 @@ mod tests {
         state.repo_prs = vec![make_pr("Fix search flow", "alice")];
         state.search_query = "does-not-match".to_string();
 
-        assert_eq!(state.filtered_detail_items().len(), 1);
+        // 1 section header + 1 PR item
+        assert_eq!(state.filtered_detail_items().len(), 2);
     }
 
     #[test]

@@ -446,86 +446,103 @@ fn render_pr_list(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 
     let mut lines: Vec<Line> = Vec::new();
+    let mut selected_line_end = 0usize;
+
     for (idx, item) in items.iter().enumerate() {
-        if let crate::app::DetailItem::Pr(pr) = item {
-            let selected = idx == state.detail_selected;
-            let icon = if pr.draft {
-                "○"
-            } else if pr.merged {
-                "◆"
-            } else if pr.state == "closed" {
-                "●"
-            } else {
-                "●"
-            };
-            let icon_color = if pr.draft {
-                Color::DarkGray
-            } else if pr.merged {
-                Color::Magenta
-            } else if pr.state == "closed" {
-                Color::Red
-            } else {
-                Color::Green
-            };
+        match item {
+            crate::app::DetailItem::SectionHeader(label) => {
+                let w = area.width as usize;
+                let pad = w.saturating_sub(label.len() + 5);
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("── {} {}", label, "─".repeat(pad)),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+            crate::app::DetailItem::Pr(pr) => {
+                let selected = idx == state.detail_selected;
+                let icon = if pr.draft {
+                    "○"
+                } else if pr.merged {
+                    "◆"
+                } else if pr.state == "closed" {
+                    "●"
+                } else {
+                    "●"
+                };
+                let icon_color = if pr.draft {
+                    Color::DarkGray
+                } else if pr.merged {
+                    Color::Magenta
+                } else if pr.state == "closed" {
+                    Color::Red
+                } else {
+                    Color::Green
+                };
 
-            let style = if selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+                let style = if selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
 
-            let age = pr
-                .updated_at
-                .map(|dt| {
-                    let ago = Utc::now().signed_duration_since(dt);
-                    if ago.num_hours() < 1 {
-                        format!("{}m ago", ago.num_minutes())
-                    } else if ago.num_hours() < 24 {
-                        format!("{}h ago", ago.num_hours())
-                    } else {
-                        format!("{}d ago", ago.num_days())
-                    }
-                })
-                .unwrap_or_default();
+                let age = pr
+                    .updated_at
+                    .map(|dt| {
+                        let ago = Utc::now().signed_duration_since(dt);
+                        if ago.num_hours() < 1 {
+                            format!("{}m ago", ago.num_minutes())
+                        } else if ago.num_hours() < 24 {
+                            format!("{}h ago", ago.num_hours())
+                        } else {
+                            format!("{}d ago", ago.num_days())
+                        }
+                    })
+                    .unwrap_or_default();
 
-            lines.push(Line::from(vec![
-                Span::raw(if selected { "  > " } else { "    " }),
-                Span::styled(icon, Style::default().fg(icon_color)),
-                Span::styled(
-                    format!(" #{:<5}", pr.number),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(&pr.title, style),
-                Span::raw("  "),
-                Span::styled(&pr.user, Style::default().fg(Color::Magenta)),
-            ]));
-            let diff_stats = if pr.additions > 0 || pr.deletions > 0 {
-                format!("  +{} -{}", pr.additions, pr.deletions)
-            } else {
-                String::new()
-            };
-            lines.push(Line::from(vec![
-                Span::raw("         "),
-                Span::styled(
-                    format!("{} ← {}", pr.base_ref, pr.head_ref),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::raw("  "),
-                Span::styled(age, Style::default().fg(Color::DarkGray)),
-                Span::styled(diff_stats, Style::default().fg(Color::Green)),
-            ]));
-            lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::raw(if selected { "  > " } else { "    " }),
+                    Span::styled(icon, Style::default().fg(icon_color)),
+                    Span::styled(
+                        format!(" #{:<5}", pr.number),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(&pr.title, style),
+                    Span::raw("  "),
+                    Span::styled(&pr.user, Style::default().fg(Color::Magenta)),
+                ]));
+                let diff_stats = if pr.additions > 0 || pr.deletions > 0 {
+                    format!("  +{} -{}", pr.additions, pr.deletions)
+                } else {
+                    String::new()
+                };
+                lines.push(Line::from(vec![
+                    Span::raw("         "),
+                    Span::styled(
+                        format!("{} ← {}", pr.base_ref, pr.head_ref),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(age, Style::default().fg(Color::DarkGray)),
+                    Span::styled(diff_stats, Style::default().fg(Color::Green)),
+                ]));
+                lines.push(Line::from(""));
+            }
+            _ => {}
+        }
+
+        if idx == state.detail_selected {
+            selected_line_end = lines.len();
         }
     }
 
-    // Scroll
-    let item_height = 3;
-    let selected_top = state.detail_selected * item_height;
+    // Scroll to keep selected item visible
     let visible = area.height as usize;
-    let scroll = if selected_top + item_height > visible {
-        selected_top + item_height - visible
+    let scroll = if selected_line_end > visible {
+        selected_line_end - visible
     } else {
         0
     };
@@ -545,78 +562,95 @@ fn render_issue_list(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 
     let mut lines: Vec<Line> = Vec::new();
+    let mut selected_line_end = 0usize;
+
     for (idx, item) in items.iter().enumerate() {
-        if let crate::app::DetailItem::Issue(issue) = item {
-            let selected = idx == state.detail_selected;
-            let icon = if issue.state == "closed" {
-                "●"
-            } else {
-                "○"
-            };
-            let icon_color = if issue.state == "closed" {
-                Color::Red
-            } else {
-                Color::Green
-            };
+        match item {
+            crate::app::DetailItem::SectionHeader(label) => {
+                let w = area.width as usize;
+                let pad = w.saturating_sub(label.len() + 5);
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("── {} {}", label, "─".repeat(pad)),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+            crate::app::DetailItem::Issue(issue) => {
+                let selected = idx == state.detail_selected;
+                let icon = if issue.state == "closed" {
+                    "●"
+                } else {
+                    "○"
+                };
+                let icon_color = if issue.state == "closed" {
+                    Color::Red
+                } else {
+                    Color::Green
+                };
 
-            let style = if selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+                let style = if selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
 
-            let labels_str = if issue.labels.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", issue.labels.join(", "))
-            };
+                let labels_str = if issue.labels.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", issue.labels.join(", "))
+                };
 
-            let age = issue
-                .updated_at
-                .map(|dt| {
-                    let ago = Utc::now().signed_duration_since(dt);
-                    if ago.num_hours() < 1 {
-                        format!("{}m ago", ago.num_minutes())
-                    } else if ago.num_hours() < 24 {
-                        format!("{}h ago", ago.num_hours())
-                    } else {
-                        format!("{}d ago", ago.num_days())
-                    }
-                })
-                .unwrap_or_default();
+                let age = issue
+                    .updated_at
+                    .map(|dt| {
+                        let ago = Utc::now().signed_duration_since(dt);
+                        if ago.num_hours() < 1 {
+                            format!("{}m ago", ago.num_minutes())
+                        } else if ago.num_hours() < 24 {
+                            format!("{}h ago", ago.num_hours())
+                        } else {
+                            format!("{}d ago", ago.num_days())
+                        }
+                    })
+                    .unwrap_or_default();
 
-            lines.push(Line::from(vec![
-                Span::raw(if selected { "  > " } else { "    " }),
-                Span::styled(icon, Style::default().fg(icon_color)),
-                Span::styled(
-                    format!(" #{:<5}", issue.number),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(&issue.title, style),
-                Span::styled(labels_str, Style::default().fg(Color::Yellow)),
-            ]));
-            lines.push(Line::from(vec![
-                Span::raw("         "),
-                Span::styled(&issue.user, Style::default().fg(Color::Magenta)),
-                Span::raw("  "),
-                Span::styled(age, Style::default().fg(Color::DarkGray)),
-                Span::raw("  "),
-                Span::styled(
-                    format!("💬 {}", issue.comments),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]));
-            lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::raw(if selected { "  > " } else { "    " }),
+                    Span::styled(icon, Style::default().fg(icon_color)),
+                    Span::styled(
+                        format!(" #{:<5}", issue.number),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(&issue.title, style),
+                    Span::styled(labels_str, Style::default().fg(Color::Yellow)),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("         "),
+                    Span::styled(&issue.user, Style::default().fg(Color::Magenta)),
+                    Span::raw("  "),
+                    Span::styled(age, Style::default().fg(Color::DarkGray)),
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("💬 {}", issue.comments),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+                lines.push(Line::from(""));
+            }
+            _ => {}
+        }
+
+        if idx == state.detail_selected {
+            selected_line_end = lines.len();
         }
     }
 
-    let item_height = 3;
-    let selected_top = state.detail_selected * item_height;
     let visible = area.height as usize;
-    let scroll = if selected_top + item_height > visible {
-        selected_top + item_height - visible
+    let scroll = if selected_line_end > visible {
+        selected_line_end - visible
     } else {
         0
     };
