@@ -1068,6 +1068,9 @@ pub fn update(state: &mut AppState, msg: Message) {
         }
         Message::BranchInputSubmit => {
             state.branch_input_mode = false;
+            if state.branch_input.is_some() {
+                state.pending_start_work = true;
+            }
         }
         Message::WorkspaceReady(path) => {
             state.workspace_status = Some(format!("Workspace ready: {}", path));

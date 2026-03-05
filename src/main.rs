@@ -543,6 +543,188 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                     if let Some(url) = state.pending_open_url.take() {
                         let _ = open::that(&url);
                     }
+
+                    if state.pending_start_work {
+                        state.pending_start_work = false;
+                        let workspace_config = config.workspaces.clone();
+
+                        // Determine what to clone based on current screen/selection
+                        let clone_info: Option<(String, String, String, String, Option<u64>)> =
+                            match &state.screen {
+                                Screen::RepoDetail {
+                                    repo_full_name,
+                                    section,
+                                } => {
+                                    let parts: Vec<&str> =
+                                        repo_full_name.splitn(2, '/').collect();
+                                    if parts.len() != 2 {
+                                        None
+                                    } else {
+                                        let (owner, repo) =
+                                            (parts[0].to_string(), parts[1].to_string());
+                                        let items = state.filtered_detail_items();
+                                        match section {
+                                            app::RepoSection::Issues => {
+                                                if let Some(app::DetailItem::Issue(issue)) =
+                                                    items.get(state.detail_selected)
+                                                {
+                                                    let branch = workspace::issue_branch_name(
+                                                        issue.number,
+                                                        &issue.title,
+                                                    );
+                                                    let dir_slug = branch.clone();
+                                                    Some((
+                                                        owner, repo, branch, dir_slug, None,
+                                                    ))
+                                                } else {
+                                                    None
+                                                }
+                                            }
+                                            app::RepoSection::PRs => {
+                                                if let Some(app::DetailItem::Pr(pr)) =
+                                                    items.get(state.detail_selected)
+                                                {
+                                                    let dir_slug = workspace::pr_dir_slug(
+                                                        pr.number, &pr.title,
+                                                    );
+                                                    let branch = pr.head_ref.clone();
+                                                    Some((
+                                                        owner,
+                                                        repo,
+                                                        branch,
+                                                        dir_slug,
+                                                        Some(pr.number),
+                                                    ))
+                                                } else {
+                                                    None
+                                                }
+                                            }
+                                            _ => None,
+                                        }
+                                    }
+                                }
+                                Screen::Home => {
+                                    if let Some(branch) = state.branch_input.take() {
+                                        if let Err(e) =
+                                            workspace::validate_branch_name(&branch)
+                                        {
+                                            state.error = Some(e.to_string());
+                                            state.error_at =
+                                                Some(std::time::Instant::now());
+                                            None
+                                        } else if let Some(repo) = state.selected_repo() {
+                                            let parts: Vec<&str> =
+                                                repo.full_name.splitn(2, '/').collect();
+                                            if parts.len() == 2 {
+                                                let dir_slug =
+                                                    workspace::slugify(&branch);
+                                                Some((
+                                                    parts[0].to_string(),
+                                                    parts[1].to_string(),
+                                                    branch,
+                                                    dir_slug,
+                                                    None,
+                                                ))
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                }
+                            };
+
+                        if let Some((owner, repo, branch, dir_slug, pr_number)) = clone_info
+                        {
+                            state.workspace_status =
+                                Some(format!("Cloning {}/{}...", owner, repo));
+                            let tx = bg_tx.clone();
+                            rt.spawn(async move {
+                                let result = tokio::task::spawn_blocking(move || {
+                                    let ws = workspace::WorkspaceOps::new(
+                                        workspace_config.dir.clone(),
+                                    );
+                                    let ws_dir =
+                                        ws.workspace_dir(&owner, &repo, &dir_slug);
+
+                                    if ws_dir.is_dir() {
+                                        // Existing workspace -- fetch and reopen
+                                        let _ =
+                                            workspace::WorkspaceOps::fetch_latest(&ws_dir);
+                                    } else {
+                                        // Find source repo for env files + protocol detection
+                                        let source = workspace::find_source_repo(
+                                            &workspace_config.source_dirs,
+                                            &owner,
+                                            &repo,
+                                        );
+                                        let source_remote = source
+                                            .as_ref()
+                                            .and_then(|p| workspace::get_remote_url(p));
+                                        let url = workspace::clone_url(
+                                            source_remote.as_deref(),
+                                            &owner,
+                                            &repo,
+                                        );
+
+                                        // Clone
+                                        ws.clone_repo(
+                                            &url, &owner, &repo, &dir_slug,
+                                        )?;
+
+                                        // Copy env files
+                                        if let Some(ref source_dir) = source {
+                                            let _ = workspace::copy_env_files(
+                                                source_dir, &ws_dir,
+                                            );
+                                        }
+
+                                        // Checkout branch
+                                        if let Some(pr_num) = pr_number {
+                                            workspace::WorkspaceOps::checkout_pr(
+                                                &ws_dir, pr_num, &branch,
+                                            )?;
+                                        } else {
+                                            workspace::WorkspaceOps::checkout_new_branch(
+                                                &ws_dir, &branch,
+                                            )?;
+                                        }
+                                    }
+
+                                    // Open tmux window
+                                    if workspace::is_inside_tmux() {
+                                        workspace::open_tmux_window(
+                                            &ws_dir, &dir_slug,
+                                        )?;
+                                    }
+
+                                    Ok::<String, anyhow::Error>(
+                                        ws_dir.to_string_lossy().to_string(),
+                                    )
+                                })
+                                .await
+                                .map_err(|e| {
+                                    anyhow::anyhow!("Task join error: {}", e)
+                                })?;
+
+                                match result {
+                                    Ok(path) => {
+                                        let _ =
+                                            tx.send(Message::WorkspaceReady(path));
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(Message::WorkspaceError(
+                                            e.to_string(),
+                                        ));
+                                    }
+                                }
+                                Ok::<(), anyhow::Error>(())
+                            });
+                        }
+                    }
                 }
             }
             AppEvent::Tick => {
