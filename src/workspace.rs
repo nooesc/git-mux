@@ -1,4 +1,6 @@
 use anyhow::{bail, Result};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Slugify a string for use as a directory name.
 /// Lowercase, replace non-alphanumeric with `-`, collapse consecutive `-`, trim to 60 chars.
@@ -68,6 +70,127 @@ pub fn validate_branch_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Extract `owner/repo` from a git remote URL (SSH or HTTPS).
+fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
+    // SSH: git@github.com:owner/repo.git
+    if let Some(rest) = url.strip_prefix("git@github.com:") {
+        let clean = rest.trim_end_matches(".git");
+        let parts: Vec<&str> = clean.splitn(2, '/').collect();
+        if parts.len() == 2 {
+            return Some((parts[0].to_string(), parts[1].to_string()));
+        }
+    }
+    // HTTPS: https://github.com/owner/repo.git
+    if url.contains("github.com/") {
+        let after = url.split("github.com/").nth(1)?;
+        let clean = after.trim_end_matches(".git");
+        let parts: Vec<&str> = clean.splitn(2, '/').collect();
+        if parts.len() == 2 {
+            return Some((parts[0].to_string(), parts[1].to_string()));
+        }
+    }
+    None
+}
+
+/// Get the origin remote URL for a directory, if it's a git repo.
+pub fn get_remote_url(dir: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["-C", &dir.to_string_lossy(), "remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+fn check_remote_match(dir: &Path, owner: &str, repo: &str) -> bool {
+    if let Some(url) = get_remote_url(dir) {
+        if let Some((remote_owner, remote_repo)) = parse_remote_owner_repo(&url) {
+            return remote_owner.eq_ignore_ascii_case(owner)
+                && remote_repo.eq_ignore_ascii_case(repo);
+        }
+    }
+    false
+}
+
+/// Find a source repository in `source_dirs` that matches `owner/repo`.
+/// Scans up to two levels deep. Matches by git remote URL.
+pub fn find_source_repo(source_dirs: &[String], owner: &str, repo: &str) -> Option<PathBuf> {
+    for source_dir in source_dirs {
+        let expanded = shellexpand::tilde(source_dir);
+        let base = PathBuf::from(expanded.as_ref());
+        if !base.is_dir() {
+            continue;
+        }
+        // Level 1: direct children
+        if let Ok(entries) = std::fs::read_dir(&base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                if check_remote_match(&path, owner, repo) {
+                    return Some(path);
+                }
+                // Level 2: children of children
+                if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                    for sub_entry in sub_entries.flatten() {
+                        let sub_path = sub_entry.path();
+                        if sub_path.is_dir() && check_remote_match(&sub_path, owner, repo) {
+                            return Some(sub_path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Copy `.env*` files from source to destination directory.
+/// Skips files over 1MB and symlinks.
+pub fn copy_env_files(src: &Path, dst: &Path) -> Result<u32> {
+    let mut count = 0;
+    if let Ok(entries) = std::fs::read_dir(src) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+
+            if !name_str.starts_with(".env") {
+                continue;
+            }
+            if path
+                .symlink_metadata()
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            if path.metadata().map(|m| m.len()).unwrap_or(0) > 1_048_576 {
+                continue;
+            }
+            std::fs::copy(&path, dst.join(&name))?;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+/// Detect clone protocol from source repo's remote URL.
+pub fn clone_url(source_remote: Option<&str>, owner: &str, repo: &str) -> String {
+    match source_remote {
+        Some(url) if url.starts_with("git@") => {
+            format!("git@github.com:{}/{}.git", owner, repo)
+        }
+        _ => {
+            format!("https://github.com/{}/{}.git", owner, repo)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +256,156 @@ mod tests {
         assert!(validate_branch_name("branch.lock").is_err());
         assert!(validate_branch_name("branch with spaces").is_err());
         assert!(validate_branch_name(&"a".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn test_find_source_repo_by_remote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("my-project");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/owner/my-project.git",
+            ])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+
+        let source_dirs = vec![tmp.path().to_string_lossy().to_string()];
+        let result = find_source_repo(&source_dirs, "owner", "my-project");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), repo_dir);
+    }
+
+    #[test]
+    fn test_find_source_repo_ssh_remote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("my-project");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:owner/my-project.git",
+            ])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+
+        let source_dirs = vec![tmp.path().to_string_lossy().to_string()];
+        let result = find_source_repo(&source_dirs, "owner", "my-project");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_find_source_repo_two_levels_deep() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("org").join("my-project");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/owner/my-project.git",
+            ])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+
+        let source_dirs = vec![tmp.path().to_string_lossy().to_string()];
+        let result = find_source_repo(&source_dirs, "owner", "my-project");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_find_source_repo_no_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source_dirs = vec![tmp.path().to_string_lossy().to_string()];
+        let result = find_source_repo(&source_dirs, "owner", "nonexistent");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_copy_env_files() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        std::fs::write(src.path().join(".env"), "SECRET=123").unwrap();
+        std::fs::write(src.path().join(".env.local"), "LOCAL=456").unwrap();
+        std::fs::write(src.path().join(".env.development"), "DEV=789").unwrap();
+        std::fs::write(src.path().join("README.md"), "hello").unwrap();
+
+        copy_env_files(src.path(), dst.path()).unwrap();
+
+        assert!(dst.path().join(".env").exists());
+        assert!(dst.path().join(".env.local").exists());
+        assert!(dst.path().join(".env.development").exists());
+        assert!(!dst.path().join("README.md").exists());
+    }
+
+    #[test]
+    fn test_copy_env_files_skips_large() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        let big_content = "X".repeat(1_100_000);
+        std::fs::write(src.path().join(".env.huge"), &big_content).unwrap();
+        std::fs::write(src.path().join(".env"), "SMALL=yes").unwrap();
+
+        copy_env_files(src.path(), dst.path()).unwrap();
+
+        assert!(dst.path().join(".env").exists());
+        assert!(!dst.path().join(".env.huge").exists());
+    }
+
+    #[test]
+    fn test_clone_url_from_ssh_source() {
+        assert_eq!(
+            clone_url(Some("git@github.com:owner/repo.git"), "owner", "repo"),
+            "git@github.com:owner/repo.git"
+        );
+    }
+
+    #[test]
+    fn test_clone_url_from_https_source() {
+        assert_eq!(
+            clone_url(
+                Some("https://github.com/owner/repo.git"),
+                "owner",
+                "repo"
+            ),
+            "https://github.com/owner/repo.git"
+        );
+    }
+
+    #[test]
+    fn test_clone_url_no_source() {
+        assert_eq!(
+            clone_url(None, "owner", "repo"),
+            "https://github.com/owner/repo.git"
+        );
     }
 }
