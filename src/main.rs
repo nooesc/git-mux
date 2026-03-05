@@ -4,6 +4,7 @@ mod config;
 mod event;
 mod github;
 mod ui;
+mod workspace;
 
 use anyhow::Result;
 use app::{AppState, Message, Screen, update};
