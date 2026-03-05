@@ -10,6 +10,8 @@ pub struct Config {
     pub orgs: OrgConfig,
     #[serde(default)]
     pub repos: RepoConfig,
+    #[serde(default)]
+    pub workspaces: WorkspaceConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -34,6 +36,26 @@ pub struct RepoConfig {
     pub exclude: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct WorkspaceConfig {
+    #[serde(default = "default_workspace_dir")]
+    pub dir: String,
+    #[serde(default)]
+    pub source_dirs: Vec<String>,
+    #[serde(default = "default_cleanup_days")]
+    pub cleanup_after_days: u64,
+}
+
+impl Default for WorkspaceConfig {
+    fn default() -> Self {
+        WorkspaceConfig {
+            dir: default_workspace_dir(),
+            source_dirs: Vec::new(),
+            cleanup_after_days: 7,
+        }
+    }
+}
+
 fn default_general() -> GeneralConfig {
     GeneralConfig {
         refresh_interval_secs: 60,
@@ -47,6 +69,18 @@ fn default_view() -> String {
     "repos".to_string()
 }
 
+fn default_workspace_dir() -> String {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("git-mux")
+        .to_string_lossy()
+        .to_string()
+}
+
+fn default_cleanup_days() -> u64 {
+    7
+}
+
 impl Config {
     pub fn load() -> Result<Self> {
         let path = Self::config_path();
@@ -58,6 +92,7 @@ impl Config {
                 general: default_general(),
                 orgs: OrgConfig::default(),
                 repos: RepoConfig::default(),
+                workspaces: WorkspaceConfig::default(),
             };
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -112,5 +147,48 @@ mod tests {
         .unwrap();
         assert_eq!(config.repos.exclude.len(), 2);
         assert_eq!(config.repos.exclude[0], "owner/repo-name");
+    }
+
+    #[test]
+    fn test_workspace_config_defaults() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(
+            config.workspaces.dir,
+            dirs::home_dir()
+                .unwrap()
+                .join("git-mux")
+                .to_string_lossy()
+                .to_string()
+        );
+        assert!(config.workspaces.source_dirs.is_empty());
+        assert_eq!(config.workspaces.cleanup_after_days, 7);
+    }
+
+    #[test]
+    fn test_workspace_config_custom() {
+        let config: Config = toml::from_str(
+            r#"
+            [workspaces]
+            dir = "/tmp/my-workspaces"
+            source_dirs = ["~/dev-personal", "~/dev-work"]
+            cleanup_after_days = 14
+        "#,
+        )
+        .unwrap();
+        assert_eq!(config.workspaces.dir, "/tmp/my-workspaces");
+        assert_eq!(config.workspaces.source_dirs.len(), 2);
+        assert_eq!(config.workspaces.cleanup_after_days, 14);
+    }
+
+    #[test]
+    fn test_workspace_config_cleanup_disabled() {
+        let config: Config = toml::from_str(
+            r#"
+            [workspaces]
+            cleanup_after_days = 0
+        "#,
+        )
+        .unwrap();
+        assert_eq!(config.workspaces.cleanup_after_days, 0);
     }
 }
