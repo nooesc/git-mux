@@ -766,13 +766,18 @@ fn render(frame: &mut Frame, state: &AppState) {
             format!(" Error: {} ", err),
             Style::default().fg(Color::Red),
         ))
+    } else if let Some(ref ws_status) = state.workspace_status {
+        Line::from(Span::styled(
+            format!(" {} ", ws_status),
+            Style::default().fg(Color::Yellow),
+        ))
     } else {
         let mut hints = match &state.screen {
             Screen::Home => {
-                " j/k scroll · h/l move · Enter open · Tab cycle filter · V list/cards · / search · n notifs · ? help · q back · Esc quit ".to_string()
+                " j/k scroll · h/l move · Enter open · w start work · Tab cycle filter · V list/cards · / search · n notifs · ? help · q back · Esc quit ".to_string()
             }
             Screen::RepoDetail { .. } => {
-                " j/k nav · Tab next section · Enter open · r re-run · q back · ? help · Esc quit ".to_string()
+                " j/k nav · Tab next section · Enter action menu · r re-run · q back · ? help · Esc quit ".to_string()
             }
         };
         if state.screen == Screen::Home && !state.search_query.is_empty() {
@@ -795,6 +800,16 @@ fn render(frame: &mut Frame, state: &AppState) {
     // Search overlay
     if state.search_mode {
         render_search_overlay(frame, state);
+    }
+
+    // Action menu overlay
+    if let Some(ref menu) = state.action_menu {
+        render_action_menu(frame, frame.area(), menu);
+    }
+
+    // Branch input overlay
+    if state.branch_input_mode {
+        render_branch_input(frame, frame.area(), state);
     }
 }
 
@@ -862,6 +877,59 @@ fn render_search_overlay(frame: &mut Frame, state: &AppState) {
         )
         .style(Style::default().fg(Color::White));
 
+    frame.render_widget(popup, popup_area);
+}
+
+fn render_action_menu(frame: &mut Frame, area: Rect, menu: &app::ActionMenuState) {
+    let height = if menu.has_start_work { 4 } else { 3 };
+    let popup_area = centered_rect_fixed(26, height, area);
+    frame.render_widget(Clear, popup_area);
+
+    let options: Vec<&str> = if menu.has_start_work {
+        vec!["Open in browser", "Start work"]
+    } else {
+        vec!["Open in browser"]
+    };
+
+    let mut lines = Vec::new();
+    for (i, label) in options.iter().enumerate() {
+        let (prefix, style) = if i == menu.selected {
+            (" \u{25b8} ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        } else {
+            ("   ", Style::default().fg(Color::White))
+        };
+        lines.push(Line::from(Span::styled(format!("{}{}", prefix, label), style)));
+    }
+
+    let popup = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(popup, popup_area);
+}
+
+fn render_branch_input(frame: &mut Frame, area: Rect, state: &AppState) {
+    let popup_area = centered_rect_fixed(60, 5, area);
+    frame.render_widget(Clear, popup_area);
+
+    let input = state.branch_input.as_deref().unwrap_or("");
+    let input_line = Line::from(vec![
+        Span::styled(" Branch: ", Style::default().fg(Color::Yellow)),
+        Span::styled(input, Style::default().fg(Color::White)),
+        Span::styled("_", Style::default().fg(Color::DarkGray)),
+    ]);
+    let hint_line = Line::from(Span::styled(
+        " Enter confirm · Esc cancel ",
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let popup = Paragraph::new(vec![input_line, hint_line]).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Start Work ")
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
     frame.render_widget(popup, popup_area);
 }
 
