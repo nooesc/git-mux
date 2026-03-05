@@ -72,7 +72,7 @@ fn default_view() -> String {
 fn default_workspace_dir() -> String {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("git-mux")
+        .join("dev-mux")
         .to_string_lossy()
         .to_string()
 }
@@ -156,7 +156,7 @@ mod tests {
             config.workspaces.dir,
             dirs::home_dir()
                 .unwrap()
-                .join("git-mux")
+                .join("dev-mux")
                 .to_string_lossy()
                 .to_string()
         );

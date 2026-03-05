@@ -535,7 +535,7 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                             if state.screen == Screen::Home
                                 && state.home_focus == app::HomeFocus::Repos
                             {
-                                Some(Message::StartBranchInput)
+                                Some(Message::ShowActionMenu)
                             } else {
                                 None
                             }
@@ -550,6 +550,77 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
 
                     if let Some(url) = state.pending_open_url.take() {
                         let _ = open::that(&url);
+                    }
+
+                    if state.pending_continue_locally {
+                        state.pending_continue_locally = false;
+                        if let Some(repo) = state.selected_repo() {
+                            let parts: Vec<&str> =
+                                repo.full_name.splitn(2, '/').collect();
+                            if parts.len() == 2 {
+                                let owner = parts[0].to_string();
+                                let repo_name = parts[1].to_string();
+                                let source_dirs =
+                                    config.workspaces.source_dirs.clone();
+                                let tx = bg_tx.clone();
+                                rt.spawn(async move {
+                                    let result =
+                                        tokio::task::spawn_blocking(move || {
+                                            let source =
+                                                workspace::find_source_repo(
+                                                    &source_dirs,
+                                                    &owner,
+                                                    &repo_name,
+                                                );
+                                            match source {
+                                                Some(path) => {
+                                                    let dir_name = format!(
+                                                        "{}/{}",
+                                                        owner, repo_name
+                                                    );
+                                                    if workspace::is_inside_tmux()
+                                                    {
+                                                        workspace::open_tmux_window(
+                                                            &path, &dir_name,
+                                                        )?;
+                                                    }
+                                                    Ok::<String, anyhow::Error>(
+                                                        path.to_string_lossy()
+                                                            .to_string(),
+                                                    )
+                                                }
+                                                None => Err(anyhow::anyhow!(
+                                                    "No local repo found for {}/{}. Configure workspaces.source_dirs in config.toml",
+                                                    owner,
+                                                    repo_name
+                                                )),
+                                            }
+                                        })
+                                        .await
+                                        .map_err(|e| {
+                                            anyhow::anyhow!(
+                                                "Task join error: {}",
+                                                e
+                                            )
+                                        })?;
+                                    match result {
+                                        Ok(path) => {
+                                            let _ = tx.send(
+                                                Message::WorkspaceReady(path),
+                                            );
+                                        }
+                                        Err(e) => {
+                                            let _ = tx.send(
+                                                Message::WorkspaceError(
+                                                    e.to_string(),
+                                                ),
+                                            );
+                                        }
+                                    }
+                                    Ok::<(), anyhow::Error>(())
+                                });
+                            }
+                        }
                     }
 
                     if state.pending_start_work {
@@ -890,14 +961,12 @@ fn render_search_overlay(frame: &mut Frame, state: &AppState) {
 }
 
 fn render_action_menu(frame: &mut Frame, area: Rect, menu: &app::ActionMenuState) {
-    let height = if menu.has_start_work { 4 } else { 3 };
-    let popup_area = centered_rect_fixed(26, height, area);
+    let popup_area = centered_rect_fixed(26, 4, area);
     frame.render_widget(Clear, popup_area);
 
-    let options: Vec<&str> = if menu.has_start_work {
-        vec!["Open in browser", "Start work"]
-    } else {
-        vec!["Open in browser"]
+    let options: Vec<&str> = match menu.context {
+        app::MenuContext::Detail => vec!["Open in browser", "Start work"],
+        app::MenuContext::HomeWork => vec!["Continue locally", "New branch"],
     };
 
     let mut lines = Vec::new();

@@ -92,16 +92,23 @@ pub enum RepoFilter {
     Org(String),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum MenuContext {
+    /// Issues/PRs detail: "Open in browser" / "Start work"
+    Detail,
+    /// Home screen: "Continue locally" / "New branch"
+    HomeWork,
+}
+
 #[derive(Debug, Clone)]
 pub struct ActionMenuState {
     pub selected: usize,
-    /// Whether the "Start work" option is available (only on Issues/PRs tabs)
-    pub has_start_work: bool,
+    pub context: MenuContext,
 }
 
 impl ActionMenuState {
     pub fn option_count(&self) -> usize {
-        if self.has_start_work { 2 } else { 1 }
+        2
     }
 }
 
@@ -171,6 +178,7 @@ pub struct AppState {
 
     // Start work (consumed by event loop)
     pub pending_start_work: bool,
+    pub pending_continue_locally: bool,
 
     // Workspace
     pub workspace_status: Option<String>,
@@ -223,6 +231,7 @@ impl AppState {
             action_menu: None,
             pending_open_url: None,
             pending_start_work: false,
+            pending_continue_locally: false,
             workspace_status: None,
             branch_input: None,
             branch_input_mode: false,
@@ -471,7 +480,6 @@ pub enum Message {
     ActionMenuDown,
 
     // Workspace
-    StartBranchInput,
     BranchInputChar(char),
     BranchInputBackspace,
     BranchInputSubmit,
@@ -994,11 +1002,12 @@ pub fn update(state: &mut AppState, msg: Message) {
 
         // ── Action menu ──
         Message::ShowActionMenu => {
-            let has_start_work = matches!(
-                &state.screen,
-                Screen::RepoDetail { section: RepoSection::PRs | RepoSection::Issues, .. }
-            );
-            state.action_menu = Some(ActionMenuState { selected: 0, has_start_work });
+            let context = if state.screen == Screen::Home {
+                MenuContext::HomeWork
+            } else {
+                MenuContext::Detail
+            };
+            state.action_menu = Some(ActionMenuState { selected: 0, context });
         }
 
         Message::ActionMenuDismiss => {
@@ -1023,35 +1032,45 @@ pub fn update(state: &mut AppState, msg: Message) {
 
         Message::ActionMenuSelect => {
             if let Some(menu) = state.action_menu.take() {
-                match menu.selected {
-                    0 => {
-                        // Open in browser — replicate existing Select behavior for detail items
-                        let items = state.filtered_detail_items();
-                        if let Some(item) = items.get(state.detail_selected) {
-                            let url = match item {
-                                DetailItem::Pr(pr) => &pr.html_url,
-                                DetailItem::Issue(i) => &i.html_url,
-                                DetailItem::Ci(r) => &r.html_url,
-                                DetailItem::Commit(c) => &c.html_url,
-                                DetailItem::SectionHeader(_) => return,
-                            };
-                            state.pending_open_url = Some(url.clone());
+                match menu.context {
+                    MenuContext::Detail => match menu.selected {
+                        0 => {
+                            // Open in browser
+                            let items = state.filtered_detail_items();
+                            if let Some(item) = items.get(state.detail_selected) {
+                                let url = match item {
+                                    DetailItem::Pr(pr) => &pr.html_url,
+                                    DetailItem::Issue(i) => &i.html_url,
+                                    DetailItem::Ci(r) => &r.html_url,
+                                    DetailItem::Commit(c) => &c.html_url,
+                                    DetailItem::SectionHeader(_) => return,
+                                };
+                                state.pending_open_url = Some(url.clone());
+                            }
                         }
-                    }
-                    1 => {
-                        // Start work — set flag for main.rs to pick up
-                        state.pending_start_work = true;
-                    }
-                    _ => {}
+                        1 => {
+                            // Start work — set flag for main.rs to pick up
+                            state.pending_start_work = true;
+                        }
+                        _ => {}
+                    },
+                    MenuContext::HomeWork => match menu.selected {
+                        0 => {
+                            // Continue locally — open tmux to source repo
+                            state.pending_continue_locally = true;
+                        }
+                        1 => {
+                            // New branch — show branch input
+                            state.branch_input = Some(String::new());
+                            state.branch_input_mode = true;
+                        }
+                        _ => {}
+                    },
                 }
             }
         }
 
         // ── Workspace ──
-        Message::StartBranchInput => {
-            state.branch_input = Some(String::new());
-            state.branch_input_mode = true;
-        }
         Message::BranchInputChar(c) => {
             if let Some(ref mut input) = state.branch_input {
                 input.push(c);
@@ -1711,7 +1730,7 @@ mod tests {
         update(&mut state, Message::ShowActionMenu);
         assert!(state.action_menu.is_some());
         assert_eq!(state.action_menu.as_ref().unwrap().selected, 0);
-        assert!(state.action_menu.as_ref().unwrap().has_start_work);
+        assert_eq!(state.action_menu.as_ref().unwrap().context, MenuContext::Detail);
 
         update(&mut state, Message::ActionMenuDismiss);
         assert!(state.action_menu.is_none());
@@ -1744,16 +1763,38 @@ mod tests {
     }
 
     #[test]
-    fn test_action_menu_no_start_work_on_ci() {
+    fn test_action_menu_home_work_context() {
         let mut state = AppState::new();
-        state.screen = Screen::RepoDetail {
-            repo_full_name: "owner/repo".to_string(),
-            section: RepoSection::CI,
-        };
+        state.screen = Screen::Home;
 
         update(&mut state, Message::ShowActionMenu);
-        assert!(!state.action_menu.as_ref().unwrap().has_start_work);
-        assert_eq!(state.action_menu.as_ref().unwrap().option_count(), 1);
+        assert_eq!(state.action_menu.as_ref().unwrap().context, MenuContext::HomeWork);
+        assert_eq!(state.action_menu.as_ref().unwrap().option_count(), 2);
+    }
+
+    #[test]
+    fn test_action_menu_home_continue_locally() {
+        let mut state = AppState::new();
+        state.screen = Screen::Home;
+
+        update(&mut state, Message::ShowActionMenu);
+        // Selected = 0 means "Continue locally"
+        update(&mut state, Message::ActionMenuSelect);
+        assert!(state.action_menu.is_none());
+        assert!(state.pending_continue_locally);
+    }
+
+    #[test]
+    fn test_action_menu_home_new_branch() {
+        let mut state = AppState::new();
+        state.screen = Screen::Home;
+
+        update(&mut state, Message::ShowActionMenu);
+        update(&mut state, Message::ActionMenuDown); // Move to "New branch"
+        update(&mut state, Message::ActionMenuSelect);
+        assert!(state.action_menu.is_none());
+        assert!(state.branch_input_mode);
+        assert!(state.branch_input.is_some());
     }
 
     #[test]
