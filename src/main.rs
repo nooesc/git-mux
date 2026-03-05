@@ -27,6 +27,14 @@ fn main() -> Result<()> {
 fn run(terminal: &mut DefaultTerminal) -> Result<()> {
     let config = config::Config::load()?;
 
+    // Clean up old workspaces on startup
+    {
+        let ws_ops = workspace::WorkspaceOps::new(config.workspaces.dir.clone());
+        if let Err(e) = ws_ops.cleanup_old_workspaces(config.workspaces.cleanup_after_days) {
+            eprintln!("Warning: workspace cleanup failed: {}", e);
+        }
+    }
+
     let mut state = AppState::new();
     state.exclude_orgs = config.orgs.exclude.clone();
     state.exclude_repos = config.repos.exclude.clone();
@@ -825,7 +833,8 @@ fn render_help_overlay(frame: &mut Frame) {
         Line::from(""),
         Line::from("  j/k ↑/↓      Navigate up/down"),
         Line::from("  h/l ←/→      Navigate left/right (card grid)"),
-        Line::from("  Enter        Open repo / open in browser"),
+        Line::from("  Enter        Open repo / action menu"),
+        Line::from("  w            Start work on repo (home)"),
         Line::from("  Esc          Quit"),
         Line::from("  g            Go home"),
         Line::from("  Tab          Cycle filter/section"),
